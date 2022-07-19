@@ -83,7 +83,7 @@ def parse_fatal_stacktrace(text):
 def _get_environment_vars():
     """Gather environment variables for the crash info."""
     masks = ('DESKTOP_SESSION', 'DE', 'QT_*', 'PYTHON*', 'LC_*', 'LANG',
-             'XDG_*', 'QUTE_*', 'PATH', 'XMODIFIERS', 'XIM_*')
+             'XDG_*', 'QUTE_*', 'PATH', 'XMODIFIERS', 'XIM_*', 'QTWEBENGINE_*')
     info = []
     for key, value in os.environ.items():
         for m in masks:
@@ -359,8 +359,8 @@ class _CrashDialog(QDialog):
         Args:
             newest: The newest version as a string.
         """
-        new_version = utils.parse_version(newest)
-        cur_version = utils.parse_version(qutebrowser.__version__)
+        new_version = utils.VersionNumber.parse(newest)
+        cur_version = utils.VersionNumber.parse(qutebrowser.__version__)
         lines = ['The report has been sent successfully. Thanks!']
         if new_version > cur_version:
             lines.append("<b>Note:</b> The newest available version is v{}, "

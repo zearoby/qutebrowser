@@ -8,6 +8,7 @@
 // # Prerequisites
 //
 // - Mozilla's readability library (npm install -g @mozilla/readability)
+//     - Also available in the AUR as nodejs-readability-git
 // - jsdom (npm install -g jsdom)
 // - qutejs (npm install -g qutejs)
 //
@@ -39,8 +40,8 @@ const HEADER = `
 <!DOCTYPE html>
 <html>
 <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1, text/html, charset=UTF-8" http-equiv="Content-Type">
-    </meta>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
     <title>%s</title>
     <style type="text/css">
         body {
@@ -51,6 +52,12 @@ const HEADER = `
         }
         h1, h2, h3 {
             line-height: 1.2;
+        }
+        h1.reader-title {
+            font-size: 1.85em;
+            line-height: 1.25em;
+            width: 100%;
+            margin: 0 0;
         }
         img {
             max-width:100%;
@@ -106,7 +113,15 @@ const HEADER = `
     SAwLTIgMC44OTUtMiAyczAuODk1IDIgMiAyaDIwYzEuMTEgMCAyLTAuODk1IDItMnMtMC44OTUtMi0yLTJ6bTAgOGgtMjBjLTEuMTEgMC0yIDAuODk1LTIg
     MnMwLjg5NSAyIDIgMmgyMGMxLjExIDAgMi0wLjg5NSAyLTJzLTAuODk1LTItMi0yem0tMTIgOGgtOGMtMS4xMSAwLTIgMC44OTUtMiAyczAuODk1IDIgMiA
     yaDhjMS4xMSAwIDItMC44OTUgMi0ycy0wLjg5NS0yLTItMnoiIGZpbGw9IiNmZmYiLz4KPC9nPgo8L3N2Zz4K"/>
-</head>`;
+</head>
+<body class="qute-readability">
+    <h1 class="reader-title">%s</h1>
+    <div>From <a class="reader-title" href="%s">%s</a></div>
+    <hr>
+    %s
+</body>
+</html>
+`;
 const scriptsDir = path.join(process.env.QUTE_DATA_DIR, 'userscripts');
 const tmpFile = path.join(scriptsDir, '/readability.html');
 
@@ -129,10 +144,8 @@ else {
 getDOM(target, domOpts).then(dom => {
     let reader = new Readability(dom.window.document);
     let article = reader.parse();
-    let content = util.format(HEADER, article.title) + article.content;
-
-    // add a class to make styling the page easier
-    content = content.replace('<body>', '<body class="qute-readability">')
+    let subtitle = (article.siteName == null) ? new URL(process.env.QUTE_URL).hostname : article.siteName;
+    let content = util.format(HEADER, article.title, article.title, process.env.QUTE_URL, subtitle, article.content);
 
     fs.writeFile(tmpFile, content, (err) => {
         if (err) {

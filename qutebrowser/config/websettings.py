@@ -23,7 +23,7 @@ import re
 import argparse
 import functools
 import dataclasses
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union
 
 from PyQt5.QtCore import QUrl, pyqtSlot, qVersion
 from PyQt5.QtGui import QFont
@@ -85,7 +85,11 @@ class AttributeInfo:
 
     """Info about a settings attribute."""
 
-    def __init__(self, *attributes: Any, converter: Callable = None) -> None:
+    def __init__(
+        self,
+        *attributes: Any,
+        converter: Callable[[Any], bool] = None,
+    ) -> None:
         self.attributes = attributes
         if converter is None:
             self.converter = lambda val: val
@@ -104,9 +108,6 @@ class AbstractSettings:
 
     def __init__(self, settings: Any) -> None:
         self._settings = settings
-
-    def _assert_not_unset(self, value: Any) -> None:
-        assert value is not usertypes.UNSET
 
     def set_attribute(self, name: str, value: Any) -> None:
         """Set the given QWebSettings/QWebEngineSettings attribute.
@@ -129,39 +130,44 @@ class AbstractSettings:
         info = self._ATTRIBUTES[name]
         return self._settings.testAttribute(info.attributes[0])
 
-    def set_font_size(self, name: str, value: int) -> None:
+    def set_font_size(self, name: str, value: Union[int, usertypes.Unset]) -> None:
         """Set the given QWebSettings/QWebEngineSettings font size."""
-        self._assert_not_unset(value)
         family = self._FONT_SIZES[name]
-        self._settings.setFontSize(family, value)
+        if value is usertypes.UNSET:
+            self._settings.resetFontSize(family)
+        else:
+            self._settings.setFontSize(family, value)
 
-    def set_font_family(self, name: str, value: Optional[str]) -> None:
+    def set_font_family(
+        self,
+        name: str,
+        value: Union[str, None, usertypes.Unset],
+    ) -> None:
         """Set the given QWebSettings/QWebEngineSettings font family.
 
         With None (the default), QFont is used to get the default font for the
         family.
         """
-        self._assert_not_unset(value)
         family = self._FONT_FAMILIES[name]
-        if value is None:
+        if value is usertypes.UNSET:
+            self._settings.resetFontFamily(family)
+        elif value is None:
             font = QFont()
             font.setStyleHint(self._FONT_TO_QFONT[family])
             value = font.defaultFamily()
+            self._settings.setFontFamily(family, value)
+        else:
+            self._settings.setFontFamily(family, value)
 
-        self._settings.setFontFamily(family, value)
-
-    def set_default_text_encoding(self, encoding: str) -> None:
+    def set_default_text_encoding(self, encoding: Union[str, usertypes.Unset]) -> None:
         """Set the default text encoding to use."""
-        self._assert_not_unset(encoding)
+        assert encoding is not usertypes.UNSET  # unclear how to reset
         self._settings.setDefaultTextEncoding(encoding)
 
-    def _update_setting(self, setting: str, value: Any) -> bool:
+    def _update_setting(self, setting: str, value: Any) -> None:
         """Update the given setting/value.
 
         Unknown settings are ignored.
-
-        Return:
-            True if there was a change, False otherwise.
         """
         if setting in self._ATTRIBUTES:
             self.set_attribute(setting, value)
@@ -171,7 +177,7 @@ class AbstractSettings:
             self.set_font_family(setting, value)
         elif setting == 'content.default_encoding':
             self.set_default_text_encoding(value)
-        return False
+        # NOTE: When adding something here, also add it to init_settings()!
 
     def update_setting(self, setting: str) -> None:
         """Update the given setting."""
@@ -193,6 +199,7 @@ class AbstractSettings:
         for setting in (list(self._ATTRIBUTES) + list(self._FONT_SIZES) +
                         list(self._FONT_FAMILIES)):
             self.update_setting(setting)
+        self.update_setting('content.default_encoding')
 
 
 @debugcachestats.register(name='user agent cache')
@@ -229,6 +236,7 @@ def user_agent(url: QUrl = None) -> str:
 
 def init(args: argparse.Namespace) -> None:
     """Initialize all QWeb(Engine)Settings."""
+    utils.unused(args)
     if objects.backend == usertypes.Backend.QtWebEngine:
         from qutebrowser.browser.webengine import webenginesettings
         webenginesettings.init()

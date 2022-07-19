@@ -26,10 +26,11 @@ import re
 import html as html_utils
 from typing import cast, Union, Optional
 
-from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QPoint, QPointF, QUrl, QObject
+from PyQt5.QtCore import (pyqtSignal, pyqtSlot, Qt, QPoint, QPointF, QTimer, QUrl,
+                          QObject)
 from PyQt5.QtNetwork import QAuthenticator
-from PyQt5.QtWidgets import QWidget
-from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineScript, QWebEngineHistory
+from PyQt5.QtWebEngineWidgets import (QWebEnginePage, QWebEngineView, QWebEngineScript,
+                                      QWebEngineHistory)
 
 from qutebrowser.config import config
 from qutebrowser.browser import browsertab, eventfilter, shared, webelem, greasemonkey
@@ -38,7 +39,7 @@ from qutebrowser.browser.webengine import (webview, webengineelem, tabhistory,
                                            webengineinspector)
 
 from qutebrowser.utils import (usertypes, qtutils, log, javascript, utils,
-                               message, jinja, debug, version)
+                               resources, message, jinja, debug, version)
 from qutebrowser.qt import sip
 from qutebrowser.misc import objects, miscwidgets
 
@@ -55,6 +56,8 @@ _JS_WORLD_MAP = {
 class WebEngineAction(browsertab.AbstractAction):
 
     """QtWebEngine implementations related to web actions."""
+
+    _widget: webview.WebEngineView
 
     action_class = QWebEnginePage
     action_base = QWebEnginePage.WebAction
@@ -78,6 +81,8 @@ class WebEnginePrinting(browsertab.AbstractPrinting):
 
     """QtWebEngine implementations related to printing."""
 
+    _widget: webview.WebEngineView
+
     def check_pdf_support(self):
         pass
 
@@ -88,38 +93,73 @@ class WebEnginePrinting(browsertab.AbstractPrinting):
     def to_pdf(self, filename):
         self._widget.page().printToPdf(filename)
 
-    def to_printer(self, printer, callback=None):
-        if callback is None:
-            callback = lambda _ok: None
+    def to_printer(self, printer, callback=lambda ok: None):
         self._widget.page().print(printer, callback)
 
 
-class _WebEngineSearchWrapHandler:
+@dataclasses.dataclass
+class _FindFlags:
 
-    """QtWebEngine implementations related to wrapping when searching.
+    case_sensitive: bool = False
+    backward: bool = False
+
+    def to_qt(self):
+        """Convert flags into Qt flags."""
+        # FIXME:mypy Those should be correct, reevaluate with PyQt6-stubs
+        flags = QWebEnginePage.FindFlag(0)
+        if self.case_sensitive:
+            flags |= (  # type: ignore[assignment]
+                QWebEnginePage.FindFlag.FindCaseSensitively)
+        if self.backward:
+            flags |= QWebEnginePage.FindFlag.FindBackward  # type: ignore[assignment]
+        return flags
+
+    def __bool__(self):
+        """Flags are truthy if any flag is set to True."""
+        return any(dataclasses.astuple(self))
+
+    def __str__(self):
+        """List all true flags, in Qt enum style.
+
+        This needs to be in the same format as QtWebKit, for tests.
+        """
+        names = {
+            "case_sensitive": "FindCaseSensitively",
+            "backward": "FindBackward",
+        }
+        d = dataclasses.asdict(self)
+        truthy = [names[key] for key, value in d.items() if value]
+        if not truthy:
+            return "<no find flags>"
+        return "|".join(truthy)
+
+
+class WebEngineSearch(browsertab.AbstractSearch):
+
+    """QtWebEngine implementations related to searching on the page.
 
     Attributes:
-        flag_wrap: An additional flag indicating whether the last search
-                   used wrapping.
-        _active_match: The 1-based index of the currently active match
-                       on the page.
-        _total_matches: The total number of search matches on the page.
-        _nowrap_available: Whether the functionality to prevent wrapping
-                           is available.
+        _flags: The FindFlags of the last search.
+        _pending_searches: How many searches have been started but not called
+                           back yet.
     """
 
-    def __init__(self):
-        self._active_match = 0
-        self._total_matches = 0
-        self.flag_wrap = True
-        self._nowrap_available = False
+    _widget: webview.WebEngineView
 
-    def connect_signal(self, page):
-        """Connect to the findTextFinished signal of the page.
+    def __init__(self, tab, parent=None):
+        super().__init__(tab, parent)
+        self._flags = _FindFlags()
+        self._pending_searches = 0
+        self.match = browsertab.SearchMatch()
+        self._old_match = browsertab.SearchMatch()
 
-        Args:
-            page: The QtWebEnginePage to connect to this handler.
-        """
+    def _store_flags(self, reverse, ignore_case):
+        self._flags.case_sensitive = self._is_case_sensitive(ignore_case)
+        self._flags.backward = reverse
+
+    def connect_signals(self):
+        """Connect the signals necessary for this class to function."""
+        # The API necessary to stop wrapping was added in this version
         if not qtutils.version_check("5.14"):
             return
 
@@ -135,73 +175,7 @@ class _WebEngineSearchWrapHandler:
                                 "to rebuild PyQtWebEngine.")
             return
 
-        page.findTextFinished.connect(self._store_match_data)
-        self._nowrap_available = True
-
-    def _store_match_data(self, result):
-        """Store information on the last match.
-
-        The information will be checked against when wrapping is turned off.
-
-        Args:
-            result: A FindTextResult passed by the findTextFinished signal.
-        """
-        self._active_match = result.activeMatch()
-        self._total_matches = result.numberOfMatches()
-        log.webview.debug("Active search match: {}/{}"
-                          .format(self._active_match, self._total_matches))
-
-    def reset_match_data(self):
-        """Reset match information.
-
-        Stale information could lead to next_result or prev_result misbehaving.
-        """
-        self._active_match = 0
-        self._total_matches = 0
-
-    def prevent_wrapping(self, *, going_up):
-        """Prevent wrapping if possible and required.
-
-        Returns True if a wrap was prevented and False if not.
-
-        Args:
-            going_up: Whether the search would scroll the page up or down.
-        """
-        if (not self._nowrap_available or
-                self.flag_wrap or self._total_matches == 0):
-            return False
-        elif going_up and self._active_match == 1:
-            message.info("Search hit TOP")
-            return True
-        elif not going_up and self._active_match == self._total_matches:
-            message.info("Search hit BOTTOM")
-            return True
-        else:
-            return False
-
-
-class WebEngineSearch(browsertab.AbstractSearch):
-
-    """QtWebEngine implementations related to searching on the page.
-
-    Attributes:
-        _flags: The QWebEnginePage.FindFlags of the last search.
-        _pending_searches: How many searches have been started but not called
-                           back yet.
-    """
-
-    def __init__(self, tab, parent=None):
-        super().__init__(tab, parent)
-        self._flags = self._empty_flags()
-        self._pending_searches = 0
-        # The API necessary to stop wrapping was added in this version
-        self._wrap_handler = _WebEngineSearchWrapHandler()
-
-    def _empty_flags(self):
-        return QWebEnginePage.FindFlags(0)  # type: ignore[call-overload]
-
-    def connect_signals(self):
-        self._wrap_handler.connect_signal(self._widget.page())
+        self._widget.page().findTextFinished.connect(self._on_find_finished)
 
     def _find(self, text, flags, callback, caller):
         """Call findText on the widget."""
@@ -228,8 +202,7 @@ class WebEngineSearch(browsertab.AbstractSearch):
 
             found_text = 'found' if found else "didn't find"
             if flags:
-                flag_text = 'with flags {}'.format(debug.qflags_key(
-                    QWebEnginePage, flags, klass=QWebEnginePage.FindFlag))
+                flag_text = f'with flags {flags}'
             else:
                 flag_text = ''
             log.webview.debug(' '.join([caller, found_text, text, flag_text])
@@ -237,55 +210,88 @@ class WebEngineSearch(browsertab.AbstractSearch):
 
             if callback is not None:
                 callback(found)
+
             self.finished.emit(found)
 
-        self._widget.page().findText(text, flags, wrapped_callback)
+        self._widget.page().findText(text, flags.to_qt(), wrapped_callback)
+
+    def _on_find_finished(self, find_text_result):
+        """Unwrap the result, store it, and pass it along."""
+        self._old_match = self.match
+        self.match = browsertab.SearchMatch(
+            current=find_text_result.activeMatch(),
+            total=find_text_result.numberOfMatches(),
+        )
+        log.webview.debug(f"Active search match: {self.match}")
+        self.match_changed.emit(self.match)
 
     def search(self, text, *, ignore_case=usertypes.IgnoreCase.never,
-               reverse=False, wrap=True, result_cb=None):
+               reverse=False, result_cb=None):
         # Don't go to next entry on duplicate search
         if self.text == text and self.search_displayed:
             log.webview.debug("Ignoring duplicate search request"
-                              " for {}".format(text))
+                              " for {}, but resetting flags".format(text))
+            self._store_flags(reverse, ignore_case)
             return
 
         self.text = text
-        self._flags = self._empty_flags()
-        self._wrap_handler.reset_match_data()
-        self._wrap_handler.flag_wrap = wrap
-        if self._is_case_sensitive(ignore_case):
-            self._flags |= QWebEnginePage.FindCaseSensitively
-        if reverse:
-            self._flags |= QWebEnginePage.FindBackward
+        self._store_flags(reverse, ignore_case)
+        self.match.reset()
 
         self._find(text, self._flags, result_cb, 'search')
 
     def clear(self):
         if self.search_displayed:
             self.cleared.emit()
+            self.match_changed.emit(browsertab.SearchMatch())
         self.search_displayed = False
-        self._wrap_handler.reset_match_data()
+        self.match.reset()
         self._widget.page().findText('')
 
-    def prev_result(self, *, result_cb=None):
-        # The int() here makes sure we get a copy of the flags.
-        flags = QWebEnginePage.FindFlags(
-            int(self._flags))  # type: ignore[call-overload]
-        if flags & QWebEnginePage.FindBackward:
-            if self._wrap_handler.prevent_wrapping(going_up=False):
-                return
-            flags &= ~QWebEnginePage.FindBackward
+    def _prev_next_cb(self, found, *, going_up, callback):
+        """Call the prev/next callback based on the search result."""
+        if found:
+            result = browsertab.SearchNavigationResult.found
+            # Check if the match count change is opposite to the search direction
+            if self._old_match.current > 0:
+                if not going_up and self._old_match.current > self.match.current:
+                    result = browsertab.SearchNavigationResult.wrapped_bottom
+                elif going_up and self._old_match.current < self.match.current:
+                    result = browsertab.SearchNavigationResult.wrapped_top
         else:
-            if self._wrap_handler.prevent_wrapping(going_up=True):
-                return
-            flags |= QWebEnginePage.FindBackward
-        self._find(self.text, flags, result_cb, 'prev_result')
+            result = browsertab.SearchNavigationResult.not_found
 
-    def next_result(self, *, result_cb=None):
-        going_up = self._flags & QWebEnginePage.FindBackward
-        if self._wrap_handler.prevent_wrapping(going_up=going_up):
+        callback(result)
+
+    def prev_result(self, *, wrap=False, callback=None):
+        going_up = not self._flags.backward
+        flags = dataclasses.replace(self._flags, backward=going_up)
+
+        if self.match.at_limit(going_up=going_up) and not wrap:
+            res = (
+                browsertab.SearchNavigationResult.wrap_prevented_top if going_up else
+                browsertab.SearchNavigationResult.wrap_prevented_bottom
+            )
+            if callback is not None:
+                callback(res)
             return
-        self._find(self.text, self._flags, result_cb, 'next_result')
+
+        cb = functools.partial(self._prev_next_cb, going_up=going_up, callback=callback)
+        self._find(self.text, flags, cb, 'prev_result')
+
+    def next_result(self, *, wrap=False, callback=None):
+        going_up = self._flags.backward
+        if self.match.at_limit(going_up=going_up) and not wrap:
+            res = (
+                browsertab.SearchNavigationResult.wrap_prevented_top if going_up else
+                browsertab.SearchNavigationResult.wrap_prevented_bottom
+            )
+            if callback is not None:
+                callback(res)
+            return
+
+        cb = functools.partial(self._prev_next_cb, going_up=going_up, callback=callback)
+        self._find(self.text, self._flags, cb, 'next_result')
 
 
 class WebEngineCaret(browsertab.AbstractCaret):
@@ -401,6 +407,16 @@ class WebEngineCaret(browsertab.AbstractCaret):
         self._js_call('reverseSelection')
 
     def _follow_selected_cb_wrapped(self, js_elem, tab):
+        if sip.isdeleted(self):
+            # Sometimes, QtWebEngine JS callbacks seem to be stuck, and will
+            # later get executed when the tab is closed. However, at this point,
+            # the WebEngineCaret is already gone.
+            log.webview.warning(
+                "Got follow_selected callback for deleted WebEngineCaret. "
+                "This is most likely due to a QtWebEngine bug, please report a "
+                "qutebrowser issue if you know a way to reproduce this.")
+            return
+
         try:
             self._follow_selected_cb(js_elem, tab)
         finally:
@@ -476,6 +492,8 @@ class WebEngineCaret(browsertab.AbstractCaret):
 class WebEngineScroller(browsertab.AbstractScroller):
 
     """QtWebEngine implementations related to scrolling."""
+
+    _widget: webview.WebEngineView
 
     def __init__(self, tab, parent=None):
         super().__init__(tab, parent)
@@ -673,6 +691,9 @@ class WebEngineHistory(browsertab.AbstractHistory):
     def current_idx(self):
         return self._history.currentItemIndex()
 
+    def current_item(self):
+        return self._history.currentItem()
+
     def can_go_back(self):
         return self._history.canGoBack()
 
@@ -696,6 +717,8 @@ class WebEngineHistory(browsertab.AbstractHistory):
 class WebEngineZoom(browsertab.AbstractZoom):
 
     """QtWebEngine implementations related to zooming."""
+
+    _widget: webview.WebEngineView
 
     def _set_factor_internal(self, factor):
         self._widget.setZoomFactor(factor)
@@ -783,16 +806,43 @@ class WebEngineAudio(browsertab.AbstractAudio):
                      If that's the case, we leave it alone.
     """
 
+    _widget: webview.WebEngineView
+
     def __init__(self, tab, parent=None):
         super().__init__(tab, parent)
         self._overridden = False
 
+        # Implements the intended two-second delay specified at
+        # https://doc.qt.io/qt-5/qwebenginepage.html#recentlyAudibleChanged
+        delay_ms = 2000
+        self._silence_timer = QTimer(self)
+        self._silence_timer.setSingleShot(True)
+        self._silence_timer.setInterval(delay_ms)
+
     def _connect_signals(self):
         page = self._widget.page()
         page.audioMutedChanged.connect(self.muted_changed)
-        page.recentlyAudibleChanged.connect(self.recently_audible_changed)
+        page.recentlyAudibleChanged.connect(self._delayed_recently_audible_changed)
         self._tab.url_changed.connect(self._on_url_changed)
         config.instance.changed.connect(self._on_config_changed)
+
+    # WORKAROUND for recentlyAudibleChanged being emitted without delay from the moment
+    # that audio is dropped.
+    def _delayed_recently_audible_changed(self, recently_audible):
+        timer = self._silence_timer
+        # Stop any active timer and immediately display [A] if tab is audible,
+        # otherwise start a timer to update audio field
+        if recently_audible:
+            if timer.isActive():
+                timer.stop()
+            self.recently_audible_changed.emit(recently_audible)
+        else:
+            # Ignore all subsequent calls while the tab is muted with an active timer
+            if timer.isActive():
+                return
+            timer.timeout.connect(
+                functools.partial(self.recently_audible_changed.emit, recently_audible))
+            timer.start()
 
     def set_muted(self, muted: bool, override: bool = False) -> None:
         was_muted = self.is_muted()
@@ -829,11 +879,13 @@ class _WebEnginePermissions(QObject):
 
     """Handling of various permission-related signals."""
 
+    _widget: webview.WebEngineView
+
     # Using 0 as WORKAROUND for:
     # https://www.riverbankcomputing.com/pipermail/pyqt/2019-July/041903.html
 
     _options = {
-        0: 'content.notifications',
+        0: 'content.notifications.enabled',
         QWebEnginePage.Geolocation: 'content.geolocation',
         QWebEnginePage.MediaAudioCapture: 'content.media.audio_capture',
         QWebEnginePage.MediaVideoCapture: 'content.media.video_capture',
@@ -857,7 +909,7 @@ class _WebEnginePermissions(QObject):
     def __init__(self, tab, parent=None):
         super().__init__(parent)
         self._tab = tab
-        self._widget = cast(QWidget, None)
+        self._widget = cast(webview.WebEngineView, None)
         assert self._options.keys() == self._messages.keys()
 
     def connect_signals(self):
@@ -882,9 +934,9 @@ class _WebEnginePermissions(QObject):
         if on:
             timeout = config.val.content.fullscreen.overlay_timeout
             if timeout != 0:
-                notification = miscwidgets.FullscreenNotification(self._widget)
-                notification.set_timeout(timeout)
-                notification.show()
+                notif = miscwidgets.FullscreenNotification(self._widget)
+                notif.set_timeout(timeout)
+                notif.show()
 
     @pyqtSlot(QUrl, 'QWebEnginePage::Feature')
     def _on_feature_permission_requested(self, url, feature):
@@ -983,14 +1035,21 @@ class _Quirk:
         QWebEngineScript.DocumentCreation)
     world: QWebEngineScript.ScriptWorldId = QWebEngineScript.MainWorld
     predicate: bool = True
+    name: Optional[str] = None
+
+    def __post_init__(self):
+        if self.name is None:
+            self.name = f"js-{self.filename.replace('_', '-')}"
 
 
 class _WebEngineScripts(QObject):
 
+    _widget: webview.WebEngineView
+
     def __init__(self, tab, parent=None):
         super().__init__(parent)
         self._tab = tab
-        self._widget = cast(QWidget, None)
+        self._widget = cast(webview.WebEngineView, None)
         self._greasemonkey = greasemonkey.gm_manager
 
     def connect_signals(self):
@@ -1038,9 +1097,9 @@ class _WebEngineScripts(QObject):
         """Initialize global qutebrowser JavaScript."""
         js_code = javascript.wrap_global(
             'scripts',
-            utils.read_file('javascript/scroll.js'),
-            utils.read_file('javascript/webelem.js'),
-            utils.read_file('javascript/caret.js'),
+            resources.read_file('javascript/scroll.js'),
+            resources.read_file('javascript/webelem.js'),
+            resources.read_file('javascript/caret.js'),
         )
         # FIXME:qtwebengine what about subframes=True?
         self._inject_js('js', js_code, subframes=True)
@@ -1061,7 +1120,7 @@ class _WebEngineScripts(QObject):
         css = shared.get_user_stylesheet()
         js_code = javascript.wrap_global(
             'stylesheet',
-            utils.read_file('javascript/stylesheet.js'),
+            resources.read_file('javascript/stylesheet.js'),
             javascript.assemble('stylesheet', 'set_css', css),
         )
         self._inject_js('stylesheet', js_code, subframes=True)
@@ -1097,7 +1156,12 @@ class _WebEngineScripts(QObject):
         page_scripts = self._widget.page().scripts()
         self._remove_all_greasemonkey_scripts()
 
+        seen_names = set()
         for script in scripts:
+            while script.full_name() in seen_names:
+                script.dedup_suffix += 1
+            seen_names.add(script.full_name())
+
             new_script = QWebEngineScript()
 
             try:
@@ -1129,7 +1193,7 @@ class _WebEngineScripts(QObject):
             new_script.setInjectionPoint(QWebEngineScript.DocumentReady)
 
             new_script.setSourceCode(script.code())
-            new_script.setName(f"GM-{script.name}")
+            new_script.setName(script.full_name())
             new_script.setRunsOnSubFrames(script.runs_on_sub_frames)
 
             if script.needs_document_end_workaround():
@@ -1142,7 +1206,7 @@ class _WebEngineScripts(QObject):
 
     def _inject_site_specific_quirks(self):
         """Add site-specific quirk scripts."""
-        if not config.val.content.site_specific_quirks:
+        if not config.val.content.site_specific_quirks.enabled:
             return
 
         versions = version.qtwebengine_versions()
@@ -1151,6 +1215,12 @@ class _WebEngineScripts(QObject):
                 'whatsapp_web',
                 injection_point=QWebEngineScript.DocumentReady,
                 world=QWebEngineScript.ApplicationWorld,
+            ),
+            _Quirk('discord'),
+            _Quirk(
+                'googledocs',
+                # will be an UA quirk once we set the JS UA as well
+                name='ua-googledocs',
             ),
             _Quirk(
                 'string_replaceall',
@@ -1169,18 +1239,21 @@ class _WebEngineScripts(QObject):
         for quirk in quirks:
             if not quirk.predicate:
                 continue
-            src = utils.read_file(f'javascript/quirks/{quirk.filename}.user.js')
-            self._inject_js(
-                f'quirk_{quirk.filename}',
-                src,
-                world=quirk.world,
-                injection_point=quirk.injection_point,
-            )
+            src = resources.read_file(f'javascript/quirks/{quirk.filename}.user.js')
+            if quirk.name not in config.val.content.site_specific_quirks.skip:
+                self._inject_js(
+                    f'quirk_{quirk.filename}',
+                    src,
+                    world=quirk.world,
+                    injection_point=quirk.injection_point,
+                )
 
 
 class WebEngineTabPrivate(browsertab.AbstractTabPrivate):
 
     """QtWebEngine-related methods which aren't part of the public API."""
+
+    _widget: webview.WebEngineView
 
     def networkaccessmanager(self):
         return None
@@ -1216,6 +1289,10 @@ class WebEngineTab(browsertab.AbstractTab):
     """
 
     abort_questions = pyqtSignal()
+
+    _widget: QWebEngineView
+    search: WebEngineSearch
+    audio: WebEngineAudio
 
     def __init__(self, *, win_id, mode_manager, private, parent=None):
         super().__init__(win_id=win_id,
@@ -1472,7 +1549,6 @@ class WebEngineTab(browsertab.AbstractTab):
         displayed.
 
         WORKAROUND for https://bugreports.qt.io/browse/QTBUG-66643
-        WORKAROUND for https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=882805
         """
         match = re.search(r'"errorCode":"([^"]*)"', html)
         if match is None:
@@ -1481,8 +1557,7 @@ class WebEngineTab(browsertab.AbstractTab):
         error = match.group(1)
         log.webview.error("Load error: {}".format(error))
 
-        missing_jst = 'jstProcess(' in html and 'jstProcess=' not in html
-        if js_enabled and not missing_jst:
+        if js_enabled:
             return
 
         self._show_error_page(self.url(), error=error)
@@ -1516,11 +1591,22 @@ class WebEngineTab(browsertab.AbstractTab):
         url = error.url()
         self._insecure_hosts.add(url.host())
 
+        # WORKAROUND for https://bugreports.qt.io/browse/QTBUG-92009
+        # self.url() is not available yet and the requested URL might not match the URL
+        # we get from the error - so we just apply a heuristic here.
+        assert self.data.last_navigation is not None
+        first_party_url = self.data.last_navigation.url
+
         log.network.debug("Certificate error: {}".format(error))
+        log.network.debug("First party URL: {}".format(first_party_url))
 
         if error.is_overridable():
-            error.ignore = shared.ignore_certificate_errors(
-                url, [error], abort_on=[self.abort_questions])
+            error.ignore = shared.ignore_certificate_error(
+                request_url=url,
+                first_party_url=first_party_url,
+                error=error,
+                abort_on=[self.abort_questions],
+            )
         else:
             log.network.error("Non-overridable certificate error: "
                               "{}".format(error))
@@ -1544,12 +1630,10 @@ class WebEngineTab(browsertab.AbstractTab):
 
         # We can't really know when to show an error page, as the error might
         # have happened when loading some resource.
-        # However, self.url() is not available yet and the requested URL
-        # might not match the URL we get from the error - so we just apply a
-        # heuristic here.
-        assert self.data.last_navigation is not None
-        if (show_non_overr_cert_error and
-                url.matches(self.data.last_navigation.url, QUrl.RemoveScheme)):
+        is_resource = (
+            first_party_url.isValid() and
+            url.matches(first_party_url, QUrl.RemoveScheme))
+        if show_non_overr_cert_error and is_resource:
             self._show_error_page(url, str(error))
 
     @pyqtSlot()
@@ -1572,7 +1656,9 @@ class WebEngineTab(browsertab.AbstractTab):
         up doing it twice.
         """
         super()._on_url_changed(url)
-        if url.isValid() and qtutils.version_check('5.13'):
+        if (url.isValid() and
+                qtutils.version_check('5.13') and
+                not qtutils.version_check('5.14')):
             self.settings.update_for_url(url)
 
     @pyqtSlot(usertypes.NavigationRequest)
@@ -1618,6 +1704,7 @@ class WebEngineTab(browsertab.AbstractTab):
     def _connect_signals(self):
         view = self._widget
         page = view.page()
+        assert isinstance(page, webview.WebEnginePage), page
 
         page.windowCloseRequested.connect(self.window_close_requested)
         page.linkHovered.connect(self.link_hovered)

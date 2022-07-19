@@ -196,6 +196,26 @@ Feature: Saving and loading sessions
             url: http://localhost:*/data/numbers/3.txt
             zoom: 1.0
 
+  Scenario: Saving with --no-history
+    When I open data/numbers/1.txt
+    And I open data/numbers/2.txt
+    And I open data/numbers/3.txt
+    Then the session saved with --no-history should look like:
+      windows:
+      - tabs:
+        - history:
+          - url: http://localhost:*/data/numbers/3.txt
+
+  Scenario: Saving with --no-history and --only-active-window
+    When I open data/numbers/1.txt
+    And I open data/numbers/2.txt
+    And I open data/numbers/3.txt
+    Then the session saved with --no-history --only-active-window should look like:
+      windows:
+      - tabs:
+        - history:
+          - url: http://localhost:*/data/numbers/3.txt
+
   # https://github.com/qutebrowser/qutebrowser/issues/879
 
   Scenario: Saving a session with a page using history.replaceState()
@@ -390,7 +410,7 @@ Feature: Saving and loading sessions
       And I open data/numbers/3.txt in a new tab
       And I run :tab-pin with count 2
       And I run :session-save pin_session
-      And I run :tab-only --force
+      And I run :tab-only --pinned close
       And I run :tab-close --force
       And I run :session-load -c pin_session
       And I wait until data/numbers/3.txt is loaded

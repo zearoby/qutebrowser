@@ -19,7 +19,6 @@
 """Tests for qutebrowser.config.configtypes."""
 
 import re
-import sys
 import json
 import math
 import warnings
@@ -224,6 +223,7 @@ class TestAll:
         """Patch aliases so Command works."""
         config_stub.val.aliases = {}
 
+    # pylint: disable-next=too-many-function-args
     @pytest.fixture(params=list(gen_classes()))
     def klass(self, request):
         return request.param
@@ -1501,12 +1501,8 @@ class TestRegex:
         pytest.param('(' * 500, id='too many parens'),
         pytest.param(r'foo\Xbar', id='invalid escape X'),
         pytest.param(r'foo\Cbar', id='invalid escape C'),
-        pytest.param(r'[[]]', id='nested set', marks=pytest.mark.skipif(
-            sys.hexversion < 0x03070000,
-            reason="Warning was added in Python 3.7")),
-        pytest.param(r'[a||b]', id='set operation', marks=pytest.mark.skipif(
-            sys.hexversion < 0x03070000,
-            reason="Warning was added in Python 3.7")),
+        pytest.param(r'[[]]', id='nested set'),
+        pytest.param(r'[a||b]', id='set operation'),
     ])
     def test_to_py_invalid(self, klass, val):
         with pytest.raises(configexc.ValidationError):
@@ -1832,10 +1828,17 @@ class TestFormatString:
         '{foo} {bar} {baz}',
         '{foo} {bar',
         '{1}',
+        '{foo.attr}',
+        '{foo[999]}',
     ])
     def test_to_py_invalid(self, typ, val):
         with pytest.raises(configexc.ValidationError):
             typ.to_py(val)
+
+    def test_invalid_encoding(self, klass):
+        typ = klass(fields=[], encoding='ascii')
+        with pytest.raises(configexc.ValidationError):
+            typ.to_py('fooäbar')
 
     @pytest.mark.parametrize('value', [
         None,
@@ -1869,7 +1872,6 @@ class TestShellCommand:
     @pytest.mark.parametrize('kwargs, val', [
         ({'placeholder': True}, '[foo, bar]'),
         ({'placeholder': True}, '[foo, "{", "}", bar'),
-        ({'placeholder': True}, '[foo, bar]'),
         ({'placeholder': True}, '[foo, "{fi", "le}", bar'),
 
         # Like valid ones but with wrong placeholder
@@ -2113,6 +2115,24 @@ class TestUrlPattern:
     def test_to_py_invalid(self, klass):
         with pytest.raises(configexc.ValidationError):
             klass().to_py('http://')
+
+
+class TestStatusbarWidget:
+
+    @pytest.fixture
+    def klass(self):
+        return configtypes.StatusbarWidget
+
+    @pytest.mark.parametrize('value', ['text:bar', 'foo'])
+    def test_validate_valid_values(self, klass, value):
+        widget = klass(valid_values=configtypes.ValidValues('foo'))
+        assert widget.to_py(value) == value
+
+    @pytest.mark.parametrize('value', ['text', 'foo:bar'])
+    def test_validate_invalid_values(self, klass, value):
+        widget = klass(valid_values=configtypes.ValidValues('foo'))
+        with pytest.raises(configexc.ValidationError):
+            widget.to_py(value)
 
 
 @pytest.mark.parametrize('first, second, equal', [

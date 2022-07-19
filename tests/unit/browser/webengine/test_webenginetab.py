@@ -164,6 +164,45 @@ class TestWebengineScripts:
 
         assert scripts_helper.get_script().injectionPoint() == expected
 
+    @pytest.mark.parametrize('header1, header2, expected_names', [
+        (
+            ["// @namespace ns1", "// @name same"],
+            ["// @namespace ns2", "// @name same"],
+            ['GM-ns1/same', 'GM-ns2/same'],
+        ),
+        (
+            ["// @name same"],
+            ["// @name same"],
+            ['GM-same', 'GM-same-2'],
+        ),
+        (
+            ["// @name same"],
+            ["// @name sam"],
+            ['GM-same', 'GM-sam'],
+        ),
+    ])
+    def test_greasemonkey_duplicate_name(self, scripts_helper,
+                                         header1, header2, expected_names):
+        template = """
+            // ==UserScript==
+            {header}
+            // ==/UserScript==
+        """
+        template = textwrap.dedent(template.lstrip('\n'))
+
+        source1 = template.format(header="\n".join(header1))
+        script1 = greasemonkey.GreasemonkeyScript.parse(source1)
+        source2 = template.format(header="\n".join(header2))
+        script2 = greasemonkey.GreasemonkeyScript.parse(source2)
+        scripts_helper.inject([script1, script2])
+
+        names = [script.name() for script in scripts_helper.get_scripts()]
+        assert names == expected_names
+
+        source3 = textwrap.dedent(template.lstrip('\n')).format(header="// @name other")
+        script3 = greasemonkey.GreasemonkeyScript.parse(source3)
+        scripts_helper.inject([script3])
+
 
 def test_notification_permission_workaround():
     """Make sure the value for QWebEnginePage::Notifications is correct."""
@@ -173,5 +212,48 @@ def test_notification_permission_workaround():
         pytest.skip("No Notifications member")
 
     permissions = webenginetab._WebEnginePermissions
-    assert permissions._options[notifications] == 'content.notifications'
+    assert permissions._options[notifications] == 'content.notifications.enabled'
     assert permissions._messages[notifications] == 'show notifications'
+
+
+class TestFindFlags:
+
+    @pytest.mark.parametrize("case_sensitive, backward, expected", [
+        (True, True, (QWebEnginePage.FindFlag.FindCaseSensitively |
+                      QWebEnginePage.FindFlag.FindBackward)),
+        (True, False, QWebEnginePage.FindFlag.FindCaseSensitively),
+        (False, True, QWebEnginePage.FindFlag.FindBackward),
+        (False, False, QWebEnginePage.FindFlag(0)),
+    ])
+    def test_to_qt(self, case_sensitive, backward, expected):
+        flags = webenginetab._FindFlags(
+            case_sensitive=case_sensitive,
+            backward=backward,
+        )
+        assert flags.to_qt() == expected
+
+    @pytest.mark.parametrize("case_sensitive, backward, expected", [
+        (True, True, True),
+        (True, False, True),
+        (False, True, True),
+        (False, False, False),
+    ])
+    def test_bool(self, case_sensitive, backward, expected):
+        flags = webenginetab._FindFlags(
+            case_sensitive=case_sensitive,
+            backward=backward,
+        )
+        assert bool(flags) == expected
+
+    @pytest.mark.parametrize("case_sensitive, backward, expected", [
+        (True, True, "FindCaseSensitively|FindBackward"),
+        (True, False, "FindCaseSensitively"),
+        (False, True, "FindBackward"),
+        (False, False, "<no find flags>"),
+    ])
+    def test_str(self, case_sensitive, backward, expected):
+        flags = webenginetab._FindFlags(
+            case_sensitive=case_sensitive,
+            backward=backward,
+        )
+        assert str(flags) == expected

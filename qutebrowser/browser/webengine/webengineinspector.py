@@ -28,7 +28,8 @@ from PyQt5.QtWidgets import QWidget
 from qutebrowser.browser import inspector
 from qutebrowser.browser.webengine import webenginesettings
 from qutebrowser.misc import miscwidgets
-from qutebrowser.utils import version
+from qutebrowser.utils import version, usertypes
+from qutebrowser.keyinput import modeman
 
 
 class WebEngineInspectorView(QWebEngineView):
@@ -48,21 +49,38 @@ class WebEngineInspectorView(QWebEngineView):
 
         See WebEngineView.createWindow for details.
         """
-        return self.page().inspectedPage().view().createWindow(wintype)
+        view = self.page().inspectedPage().view()
+        assert isinstance(view, QWebEngineView), view
+        return view.createWindow(wintype)
 
 
 class WebEngineInspector(inspector.AbstractWebInspector):
 
     """A web inspector for QtWebEngine with Qt API support."""
 
+    _widget: WebEngineInspectorView
+
     def __init__(self, splitter: miscwidgets.InspectorSplitter,
                  win_id: int,
                  parent: QWidget = None) -> None:
         super().__init__(splitter, win_id, parent)
         self._check_devtools_resources()
+
         view = WebEngineInspectorView()
         self._settings = webenginesettings.WebEngineSettings(view.settings())
         self._set_widget(view)
+        page = view.page()
+        page.windowCloseRequested.connect(self._on_window_close_requested)
+
+    def _on_window_close_requested(self) -> None:
+        """Called when the 'x' was clicked in the devtools."""
+        modeman.leave(
+            self._win_id,
+            usertypes.KeyMode.insert,
+            'devtools close requested',
+            maybe=True,
+        )
+        self.hide()
 
     def _check_devtools_resources(self) -> None:
         """Make sure that the devtools resources are available on Fedora.
@@ -81,7 +99,7 @@ class WebEngineInspector(inspector.AbstractWebInspector):
                                   "please install the qt5-qtwebengine-devtools "
                                   "Fedora package.")
 
-    def inspect(self, page: QWebEnginePage) -> None:  # type: ignore[override]
+    def inspect(self, page: QWebEnginePage) -> None:
         inspector_page = self._widget.page()
         inspector_page.setInspectedPage(page)
         self._settings.update_for_url(inspector_page.requestedUrl())

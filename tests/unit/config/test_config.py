@@ -187,17 +187,40 @@ class TestKeyConfig:
 
     @pytest.mark.parametrize('bindings, expected', [
         # Simple
-        ({'a': 'message-info foo', 'b': 'message-info bar'},
-         {'message-info foo': ['a'], 'message-info bar': ['b']}),
+        ({'a': 'open foo', 'b': 'open bar'},
+         {'open foo': ['a'], 'open bar': ['b']}),
         # Multiple bindings
-        ({'a': 'message-info foo', 'b': 'message-info foo'},
-         {'message-info foo': ['b', 'a']}),
+        ({'a': 'open foo', 'b': 'open foo'},
+         {'open foo': ['b', 'a']}),
         # With modifier keys (should be listed last and normalized)
-        ({'a': 'message-info foo', '<ctrl-a>': 'message-info foo'},
-         {'message-info foo': ['a', '<Ctrl+a>']}),
+        ({'a': 'open foo', '<ctrl-a>': 'open foo'},
+         {'open foo': ['a', '<Ctrl+a>']}),
         # Chained command
-        ({'a': 'message-info foo ;; message-info bar'},
-         {'message-info foo': ['a'], 'message-info bar': ['a']}),
+        ({'a': 'open foo ;; open bar'},
+         {'open foo': ['a'], 'open bar': ['a']}),
+        # Command using set-cmd-text (#5942)
+        (
+            {
+                "o": "set-cmd-text -s :open",
+                "O": "set-cmd-text -s :open -t",
+                "go": "set-cmd-text :open {url:pretty}",
+                # all of these should be ignored
+                "/": "set-cmd-text /",
+                "?": "set-cmd-text ?",
+                ":": "set-cmd-text :",
+                "a": "set-cmd-text no_leading_colon",
+                "b": "set-cmd-text -s -a :skip_cuz_append",
+                "c": "set-cmd-text --append :skip_cuz_append",
+                "x": "set-cmd-text",
+            },
+            {
+                "open": ["o"],
+                "open -t": ["O"],
+                "open {url:pretty}": ["go"],
+            }
+        ),
+        # Empty/unknown commands
+        ({"a": "", "b": "notreal"}, {}),
     ])
     def test_get_reverse_bindings_for(self, key_config_stub, config_stub,
                                       no_bindings, bindings, expected):
@@ -725,7 +748,7 @@ class TestContainer:
     def test_getattr_invalid_private(self, container):
         """Make sure an invalid _attribute doesn't try getting a container."""
         with pytest.raises(AttributeError):
-            container._foo  # pylint: disable=pointless-statement
+            container._foo
 
     def test_getattr_prefix(self, container):
         new_container = container.tabs
@@ -744,7 +767,7 @@ class TestContainer:
 
     def test_getattr_invalid(self, container):
         with pytest.raises(configexc.NoOptionError) as excinfo:
-            container.tabs.foobar  # pylint: disable=pointless-statement
+            container.tabs.foobar
         assert excinfo.value.option == 'tabs.foobar'
 
     def test_setattr_option(self, config_stub, container):
@@ -754,12 +777,12 @@ class TestContainer:
     def test_confapi_errors(self, container):
         configapi = types.SimpleNamespace(errors=[])
         container._configapi = configapi
-        container.tabs.foobar  # pylint: disable=pointless-statement
+        container.tabs.foobar
 
         assert len(configapi.errors) == 1
         error = configapi.errors[0]
         assert error.text == "While getting 'tabs.foobar'"
-        assert str(error.exception) == "No option 'tabs.foobar'"
+        assert str(error.exception).startswith("No option 'tabs.foobar'")
 
     def test_confapi_missing_prefix(self, container):
         configapi = types.SimpleNamespace(errors=[])
@@ -770,7 +793,7 @@ class TestContainer:
 
         error1 = configapi.errors[0]
         assert error1.text == "While getting 'content.host_blocking'"
-        assert str(error1.exception) == "No option 'content.host_blocking'"
+        assert str(error1.exception).startswith("No option 'content.host_blocking'")
 
         error2 = configapi.errors[1]
         assert error2.text == "While setting 'content.host_blocking.lists'"

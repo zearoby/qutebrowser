@@ -30,14 +30,11 @@ import datetime
 import traceback
 import functools
 import contextlib
-import posixpath
 import shlex
 import mimetypes
-import pathlib
-import ctypes
-import ctypes.util
-from typing import (Any, Callable, IO, Iterator, Optional, Sequence, Tuple, Type, Union,
-                    Iterable, TypeVar, TYPE_CHECKING)
+from typing import (Any, Callable, IO, Iterator,
+                    Optional, Sequence, Tuple, Type, Union,
+                    TypeVar, TYPE_CHECKING)
 try:
     # Protocol was added in Python 3.8
     from typing import Protocol
@@ -47,14 +44,10 @@ except ImportError:  # pragma: no cover
 
             """Empty stub at runtime."""
 
-from PyQt5.QtCore import QUrl, QVersionNumber, QRect
+from PyQt5.QtCore import QUrl, QVersionNumber, QRect, QPoint
 from PyQt5.QtGui import QClipboard, QDesktopServices
 from PyQt5.QtWidgets import QApplication
-# We cannot use the stdlib version on 3.7-3.8 because we need the files() API.
-if sys.version_info >= (3, 9):
-    import importlib.resources as importlib_resources
-else:  # pragma: no cover
-    import importlib_resources
+
 import yaml
 try:
     from yaml import (CSafeLoader as YamlLoader,
@@ -65,13 +58,10 @@ except ImportError:  # pragma: no cover
                       SafeDumper as YamlDumper)
     YAML_C_EXT = False
 
-import qutebrowser
 from qutebrowser.utils import log
-
 
 fake_clipboard = None
 log_clipboard = False
-_resource_cache = {}
 
 is_mac = sys.platform.startswith('darwin')
 is_linux = sys.platform.startswith('linux')
@@ -92,26 +82,72 @@ class Comparable(Protocol):
         ...
 
 
-if TYPE_CHECKING:
-    class VersionNumber(Comparable, QVersionNumber):
+class VersionNumber:
 
-        """WORKAROUND for incorrect PyQt stubs."""
-else:
-    class VersionNumber(QVersionNumber):
+    """A representation of a version number."""
 
-        """We can't inherit from Protocol and QVersionNumber at runtime."""
+    def __init__(self, *args: int) -> None:
+        self._ver = QVersionNumber(args)  # not *args, to support >3 components
+        if self._ver.isNull():
+            raise ValueError("Can't construct a null version")
 
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            normalized = self.normalized()
-            if normalized != self:
-                raise ValueError(
-                    f"Refusing to construct non-normalized version from {args} "
-                    f"(normalized: {tuple(normalized.segments())}).")
+        normalized = self._ver.normalized()
+        if normalized != self._ver:
+            raise ValueError(
+                f"Refusing to construct non-normalized version from {args} "
+                f"(normalized: {tuple(normalized.segments())}).")
 
-        def __repr__(self):
-            args = ", ".join(str(s) for s in self.segments())
-            return f'VersionNumber({args})'
+        self.major = self._ver.majorVersion()
+        self.minor = self._ver.minorVersion()
+        self.patch = self._ver.microVersion()
+        self.segments = self._ver.segments()
+
+    def __str__(self) -> str:
+        return ".".join(str(s) for s in self.segments)
+
+    def __repr__(self) -> str:
+        args = ", ".join(str(s) for s in self.segments)
+        return f'VersionNumber({args})'
+
+    def strip_patch(self) -> 'VersionNumber':
+        """Get a new VersionNumber with the patch version removed."""
+        return VersionNumber(*self.segments[:2])
+
+    @classmethod
+    def parse(cls, s: str) -> 'VersionNumber':
+        """Parse a version number from a string."""
+        ver, _suffix = QVersionNumber.fromString(s)
+        # FIXME: Should we support a suffix?
+
+        if ver.isNull():
+            raise ValueError(f"Failed to parse {s}")
+
+        return cls(*ver.normalized().segments())
+
+    def __hash__(self) -> int:
+        return hash(self._ver)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, VersionNumber):
+            return NotImplemented
+        return self._ver == other._ver
+
+    def __ne__(self, other: object) -> bool:
+        if not isinstance(other, VersionNumber):
+            return NotImplemented
+        return self._ver != other._ver
+
+    def __ge__(self, other: 'VersionNumber') -> bool:
+        return self._ver >= other._ver  # type: ignore[operator]
+
+    def __gt__(self, other: 'VersionNumber') -> bool:
+        return self._ver > other._ver  # type: ignore[operator]
+
+    def __le__(self, other: 'VersionNumber') -> bool:
+        return self._ver <= other._ver  # type: ignore[operator]
+
+    def __lt__(self, other: 'VersionNumber') -> bool:
+        return self._ver < other._ver  # type: ignore[operator]
 
 
 class Unreachable(Exception):
@@ -194,110 +230,6 @@ def compact_text(text: str, elidelength: int = None) -> str:
     if elidelength is not None:
         out = elide(out, elidelength)
     return out
-
-
-def _resource_path(filename: str) -> pathlib.Path:
-    """Get a pathlib.Path object for a resource."""
-    assert not posixpath.isabs(filename), filename
-    assert os.path.pardir not in filename.split(posixpath.sep), filename
-
-    if hasattr(sys, 'frozen'):
-        # For PyInstaller, where we can't store resource files in a qutebrowser/ folder
-        # because the executable is already named "qutebrowser" (at least on macOS).
-        return pathlib.Path(sys.executable).parent / filename
-
-    return importlib_resources.files(qutebrowser) / filename
-
-
-@contextlib.contextmanager
-def _resource_keyerror_workaround() -> Iterator[None]:
-    """Re-raise KeyErrors as FileNotFoundErrors.
-
-    WORKAROUND for zipfile.Path resources raising KeyError when a file was notfound:
-    https://bugs.python.org/issue43063
-
-    Only needed for Python 3.8 and 3.9.
-    """
-    try:
-        yield
-    except KeyError as e:
-        raise FileNotFoundError(str(e))
-
-
-def _glob_resources(
-    resource_path: pathlib.Path,
-    subdir: str,
-    ext: str,
-) -> Iterable[str]:
-    """Find resources with the given extension.
-
-    Yields a resource name like "html/log.html" (as string).
-    """
-    assert '*' not in ext, ext
-    assert ext.startswith('.'), ext
-    path = resource_path / subdir
-
-    if isinstance(resource_path, pathlib.Path):
-        for full_path in path.glob(f'*{ext}'):  # . is contained in ext
-            yield full_path.relative_to(resource_path).as_posix()
-    else:  # zipfile.Path or importlib_resources compat object
-        # Unfortunately, we can't tell mypy about resource_path being of type
-        # Union[pathlib.Path, zipfile.Path] because we set "python_version = 3.6" in
-        # .mypy.ini, but the zipfiel stubs (correctly) only declare zipfile.Path with
-        # Python 3.8...
-        assert path.is_dir(), path  # type: ignore[unreachable]
-        for subpath in path.iterdir():
-            if subpath.name.endswith(ext):
-                yield posixpath.join(subdir, subpath.name)
-
-
-def preload_resources() -> None:
-    """Load resource files into the cache."""
-    resource_path = _resource_path('')
-    for subdir, ext in [
-            ('html', '.html'),
-            ('javascript', '.js'),
-            ('javascript/quirks', '.js'),
-    ]:
-        for name in _glob_resources(resource_path, subdir, ext):
-            _resource_cache[name] = read_file(name)
-
-
-def read_file(filename: str) -> str:
-    """Get the contents of a file contained with qutebrowser.
-
-    Args:
-        filename: The filename to open as string.
-
-    Return:
-        The file contents as string.
-    """
-    if filename in _resource_cache:
-        return _resource_cache[filename]
-
-    path = _resource_path(filename)
-    with _resource_keyerror_workaround():
-        return path.read_text(encoding='utf-8')
-
-
-def read_file_binary(filename: str) -> bytes:
-    """Get the contents of a binary file contained with qutebrowser.
-
-    Args:
-        filename: The filename to open as string.
-
-    Return:
-        The file contents as a bytes object.
-    """
-    path = _resource_path(filename)
-    with _resource_keyerror_workaround():
-        return path.read_bytes()
-
-
-def parse_version(version: str) -> VersionNumber:
-    """Parse a version string."""
-    ver, _suffix = QVersionNumber.fromString(version)
-    return VersionNumber(ver.normalized())
 
 
 def format_seconds(total_seconds: int) -> str:
@@ -409,7 +341,7 @@ class prevent_exceptions:  # noqa: N801,N806 pylint: disable=invalid-name
         self._retval = retval
         self._predicate = predicate
 
-    def __call__(self, func: Callable) -> Callable:
+    def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
         """Called when a function should be decorated.
 
         Args:
@@ -450,7 +382,7 @@ def get_repr(obj: Any, constructor: bool = False, **attrs: Any) -> str:
         obj: The object to get a repr for.
         constructor: If True, show the Foo(one=1, two=2) form instead of
                      <Foo one=1 two=2>.
-        attrs: The attributes to add.
+        **attrs: The attributes to add.
     """
     cls = qualname(obj.__class__)
     parts = []
@@ -459,11 +391,10 @@ def get_repr(obj: Any, constructor: bool = False, **attrs: Any) -> str:
         parts.append('{}={!r}'.format(name, val))
     if constructor:
         return '{}({})'.format(cls, ', '.join(parts))
+    elif parts:
+        return '<{} {}>'.format(cls, ' '.join(parts))
     else:
-        if parts:
-            return '<{} {}>'.format(cls, ' '.join(parts))
-        else:
-            return '<{}>'.format(cls)
+        return '<{}>'.format(cls)
 
 
 def qualname(obj: Any) -> str:
@@ -497,7 +428,7 @@ def qualname(obj: Any) -> str:
 _ExceptionType = Union[Type[BaseException], Tuple[Type[BaseException]]]
 
 
-def raises(exc: _ExceptionType, func: Callable, *args: Any) -> bool:
+def raises(exc: _ExceptionType, func: Callable[..., Any], *args: Any) -> bool:
     """Check if a function raises a given exception.
 
     Args:
@@ -671,7 +602,7 @@ def open_file(filename: str, cmdline: str = None) -> None:
     # if we want to use the default
     override = config.val.downloads.open_dispatcher
 
-    if version.is_sandboxed():
+    if version.is_flatpak():
         if cmdline:
             message.error("Cannot spawn download dispatcher from sandbox")
             return
@@ -737,11 +668,12 @@ def yaml_load(f: Union[str, IO[str]]) -> Any:
             r"of from 'collections\.abc' is deprecated.*"):
         try:
             data = yaml.load(f, Loader=YamlLoader)
-        except ValueError as e:
-            if str(e).startswith('could not convert string to float'):
+        except ValueError as e:  # pragma: no cover
+            pyyaml_error = 'could not convert string to float'
+            if str(e).startswith(pyyaml_error):
                 # WORKAROUND for https://github.com/yaml/pyyaml/issues/168
                 raise yaml.YAMLError(e)
-            raise  # pragma: no cover
+            raise
 
     end = datetime.datetime.now()
 
@@ -775,7 +707,10 @@ def yaml_dump(data: Any, f: IO[str] = None) -> Optional[str]:
         return yaml_data.decode('utf-8')
 
 
-def chunk(elems: Sequence, n: int) -> Iterator[Sequence]:
+_T = TypeVar('_T')
+
+
+def chunk(elems: Sequence[_T], n: int) -> Iterator[Sequence[_T]]:
     """Yield successive n-sized chunks from elems.
 
     If elems % n != 0, the last chunk will be smaller.
@@ -817,19 +752,6 @@ def ceil_log(number: int, base: int) -> int:
     return result
 
 
-def libgl_workaround() -> None:
-    """Work around QOpenGLShaderProgram issues, especially for Nvidia.
-
-    See https://bugs.launchpad.net/ubuntu/+source/python-qt4/+bug/941826
-    """
-    if os.environ.get('QUTE_SKIP_LIBGL_WORKAROUND'):
-        return
-
-    libgl = ctypes.util.find_library("GL")
-    if libgl is not None:  # pragma: no branch
-        ctypes.CDLL(libgl, mode=ctypes.RTLD_GLOBAL)
-
-
 def parse_duration(duration: str) -> int:
     """Parse duration in format XhYmZs into milliseconds duration."""
     if duration.isdigit():
@@ -862,30 +784,13 @@ def mimetype_extension(mimetype: str) -> Optional[str]:
 
     This mostly delegates to Python's mimetypes.guess_extension(), but backports some
     changes (via a simple override dict) which are missing from earlier Python versions.
-    Most likely, this can be dropped once the minimum Python version is raised to 3.7.
+    Most likely, this can be dropped once the minimum Python version is raised to 3.10.
     """
     overrides = {
+        # Added in 3.10
+        "application/x-hdf5": ".h5",
         # Added around 3.8
         "application/manifest+json": ".webmanifest",
-        "application/x-hdf5": ".h5",
-
-        # Added in Python 3.7
-        "application/wasm": ".wasm",
-
-        # Wrong values for Python 3.6
-        # https://bugs.python.org/issue1043134
-        # https://github.com/python/cpython/pull/14375
-        "application/octet-stream": ".bin",  # not .a
-        "application/postscript": ".ps",  # not .ai
-        "application/vnd.ms-excel": ".xls",  # not .xlb
-        "application/vnd.ms-powerpoint": ".ppt",  # not .pot
-        "application/xml": ".xsl",  # not .rdf
-        "audio/mpeg": ".mp3",  # not .mp2
-        "image/jpeg": ".jpg",  # not .jpe
-        "image/tiff": ".tiff",  # not .tif
-        "text/html": ".html",  # not .htm
-        "text/plain": ".txt",  # not .bat
-        "video/mpeg": ".mpeg",  # not .m1v
     }
     if mimetype in overrides:
         return overrides[mimetype]
@@ -934,3 +839,16 @@ def parse_rect(s: str) -> QRect:
         raise ValueError("Invalid rectangle")
 
     return rect
+
+
+def parse_point(s: str) -> QPoint:
+    """Parse a point string like 13,-42."""
+    try:
+        x, y = map(int, s.split(',', maxsplit=1))
+    except ValueError:
+        raise ValueError(f"String {s} does not match X,Y")
+
+    try:
+        return QPoint(x, y)
+    except OverflowError as e:
+        raise ValueError(e)

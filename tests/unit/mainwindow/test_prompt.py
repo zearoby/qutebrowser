@@ -48,31 +48,31 @@ class TestFileCompletion:
         return _get_prompt_func
 
     @pytest.mark.parametrize('steps, where, subfolder', [
-        (1, 'next', '..'),
+        (1, 'next', 'a'),
         (1, 'prev', 'c'),
-        (2, 'next', 'a'),
+        (2, 'next', 'b'),
         (2, 'prev', 'b'),
     ])
-    def test_simple_completion(self, tmpdir, get_prompt, steps, where,
+    def test_simple_completion(self, tmp_path, get_prompt, steps, where,
                                subfolder):
         """Simply trying to tab through items."""
-        testdir = tmpdir / 'test'
+        testdir = tmp_path / 'test'
         for directory in 'abc':
-            (testdir / directory).ensure(dir=True)
+            (testdir / directory).mkdir(parents=True)
 
         prompt = get_prompt(str(testdir) + os.sep)
 
         for _ in range(steps):
             prompt.item_focus(where)
 
-        assert prompt._lineedit.text() == str(testdir / subfolder)
+        assert prompt._lineedit.text() == str((testdir / subfolder).resolve())
 
-    def test_backspacing_path(self, qtbot, tmpdir, get_prompt):
+    def test_backspacing_path(self, qtbot, tmp_path, get_prompt):
         """When we start deleting a path we want to see the subdir."""
-        testdir = tmpdir / 'test'
+        testdir = tmp_path / 'test'
 
         for directory in ['bar', 'foo']:
-            (testdir / directory).ensure(dir=True)
+            (testdir / directory).mkdir(parents=True)
 
         prompt = get_prompt(str(testdir / 'foo') + os.sep)
 
@@ -81,7 +81,10 @@ class TestFileCompletion:
             for _ in range(3):
                 qtbot.keyPress(prompt._lineedit, Qt.Key_Backspace)
 
-        # foo should get completed from f
+        # For some reason, this isn't always called when using qtbot.keyPress.
+        prompt._set_fileview_root(prompt._lineedit.text())
+
+        # 'foo' should get completed from 'f'
         prompt.item_focus('next')
         assert prompt._lineedit.text() == str(testdir / 'foo')
 
@@ -89,10 +92,36 @@ class TestFileCompletion:
         for _ in range(3):
             qtbot.keyPress(prompt._lineedit, Qt.Key_Backspace)
 
-        # We should now show / again, so tabbing twice gives us .. -> bar
+        # We should now show / again, so tabbing twice gives us bar -> foo
         prompt.item_focus('next')
         prompt.item_focus('next')
-        assert prompt._lineedit.text() == str(testdir / 'bar')
+        assert prompt._lineedit.text() == str(testdir / 'foo')
+
+    @pytest.mark.parametrize("keys, expected", [
+        ([], ['bar', 'bat', 'foo']),
+        ([Qt.Key_F], ['foo']),
+        ([Qt.Key_A], ['bar', 'bat']),
+    ])
+    def test_filtering_path(self, qtbot, tmp_path, get_prompt, keys, expected):
+        testdir = tmp_path / 'test'
+
+        for directory in ['bar', 'foo', 'bat']:
+            (testdir / directory).mkdir(parents=True)
+
+        prompt = get_prompt(str(testdir) + os.sep)
+        for key in keys:
+            qtbot.keyPress(prompt._lineedit, key)
+        prompt._set_fileview_root(prompt._lineedit.text())
+
+        num_rows = prompt._file_model.rowCount(prompt._file_view.rootIndex())
+        visible = []
+        for row in range(num_rows):
+            parent = prompt._file_model.index(
+                os.path.dirname(prompt._lineedit.text()))
+            index = prompt._file_model.index(row, 0, parent)
+            if not prompt._file_view.isRowHidden(index.row(), index.parent()):
+                visible.append(index.data())
+        assert visible == expected
 
     @pytest.mark.linux
     def test_root_path(self, get_prompt):

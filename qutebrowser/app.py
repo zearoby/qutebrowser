@@ -41,16 +41,16 @@ import os
 import sys
 import functools
 import tempfile
+import pathlib
 import datetime
 import argparse
-from typing import Iterable, Optional, cast
+from typing import Iterable, Optional
 
 from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtGui import QDesktopServices, QPixmap, QIcon
 from PyQt5.QtCore import pyqtSlot, QUrl, QObject, QEvent, pyqtSignal, Qt
 
 import qutebrowser
-import qutebrowser.resources
 from qutebrowser.commands import runners
 from qutebrowser.config import (config, websettings, configfiles, configinit,
                                 qtargs)
@@ -66,15 +66,14 @@ from qutebrowser.misc import (ipc, savemanager, sessions, crashsignal,
                               earlyinit, sql, cmdhistory, backendproblem,
                               objects, quitter)
 from qutebrowser.utils import (log, version, message, utils, urlutils, objreg,
-                               usertypes, standarddir, error, qtutils, debug)
+                               resources, usertypes, standarddir,
+                               error, qtutils, debug)
 # pylint: disable=unused-import
 # We import those to run the cmdutils.register decorators.
 from qutebrowser.mainwindow.statusbar import command
 from qutebrowser.misc import utilcmds
+from qutebrowser.browser import commands
 # pylint: enable=unused-import
-
-
-q_app = cast(QApplication, None)
 
 
 def run(args):
@@ -86,7 +85,7 @@ def run(args):
 
     log.init.debug("Initializing directories...")
     standarddir.init(args)
-    utils.preload_resources()
+    resources.preload()
 
     log.init.debug("Initializing config...")
     configinit.early_init(args)
@@ -119,13 +118,14 @@ def run(args):
             log.init.warning(
                 "Backend from the running instance will be used")
         sys.exit(usertypes.Exit.ok)
-    else:
-        quitter.instance.shutting_down.connect(server.shutdown)
-        server.got_args.connect(lambda args, target_arg, cwd:
-                                process_pos_args(args, cwd=cwd, via_ipc=True,
-                                                 target_arg=target_arg))
 
     init(args=args)
+
+    quitter.instance.shutting_down.connect(server.shutdown)
+    server.got_args.connect(
+        lambda args, target_arg, cwd:
+        process_pos_args(args, cwd=cwd, via_ipc=True, target_arg=target_arg))
+
     ret = qt_mainloop()
     return ret
 
@@ -181,8 +181,9 @@ def _init_icon():
     """Initialize the icon of qutebrowser."""
     fallback_icon = QIcon()
     for size in [16, 24, 32, 48, 64, 96, 128, 256, 512]:
-        filename = ':/icons/qutebrowser-{size}x{size}.png'.format(size=size)
-        pixmap = QPixmap(filename)
+        filename = 'icons/qutebrowser-{size}x{size}.png'.format(size=size)
+        pixmap = QPixmap()
+        pixmap.loadFromData(resources.read_file_binary(filename))
         if pixmap.isNull():
             log.init.warning("Failed to load {}".format(filename))
         else:
@@ -395,7 +396,7 @@ def _open_special_pages(args):
         return
 
     try:
-        changelog = utils.read_file('html/doc/changelog.html')
+        changelog = resources.read_file('html/doc/changelog.html')
     except OSError as e:
         log.init.warning(f"Not showing changelog due to {e}")
         return
@@ -479,11 +480,9 @@ def _init_modules(*, args):
 
     with debug.log_time("init", "Initializing SQL/history"):
         try:
-            log.init.debug("Initializing SQL...")
-            sql.init(os.path.join(standarddir.data(), 'history.sqlite'))
-
             log.init.debug("Initializing web history...")
-            history.init(objects.qapp)
+            history.init(db_path=pathlib.Path(standarddir.data()) / 'history.sqlite',
+                         parent=objects.qapp)
         except sql.KnownError as e:
             error.handle_fatal_exc(e, 'Error initializing SQL',
                                    pre_text='Error initializing SQL',
@@ -563,8 +562,7 @@ class Application(QApplication):
         log.init.debug("Initializing application...")
 
         self.launch_time = datetime.datetime.now()
-        self.focusObjectChanged.connect(  # type: ignore[attr-defined]
-            self.on_focus_object_changed)
+        self.focusObjectChanged.connect(self.on_focus_object_changed)
         self.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
         self.new_window.connect(self._on_new_window)

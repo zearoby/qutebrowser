@@ -109,8 +109,7 @@ class QuteSchemeHandler(QWebEngineUrlSchemeHandler):
                     QWebEngineUrlRequestJob.RequestFailed,
             }
             exctype = type(e)
-            log.network.error("{} while handling qute://* URL".format(
-                exctype.__name__))
+            log.network.error(f"{exctype.__name__} while handling qute://* URL: {e}")
             job.fail(errors[exctype])
         except qutescheme.Redirect as e:
             qtutils.ensure_valid(e.url)
@@ -139,6 +138,6 @@ def init():
         assert not QWebEngineUrlScheme.schemeByName(b'qute').name()
         scheme = QWebEngineUrlScheme(b'qute')
         scheme.setFlags(
-            QWebEngineUrlScheme.LocalScheme |  # type: ignore[arg-type]
+            QWebEngineUrlScheme.LocalScheme |
             QWebEngineUrlScheme.LocalAccessAllowed)
         QWebEngineUrlScheme.registerScheme(scheme)

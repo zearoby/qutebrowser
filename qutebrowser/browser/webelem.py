@@ -19,7 +19,7 @@
 
 """Generic web element related code."""
 
-from typing import cast, TYPE_CHECKING, Iterator, Optional, Set, Union
+from typing import cast, TYPE_CHECKING, Iterator, Optional, Set, Union, Dict
 import collections.abc
 
 from PyQt5.QtCore import QUrl, Qt, QEvent, QTimer, QRect, QPoint
@@ -58,7 +58,8 @@ def css_selector(group: str, url: QUrl) -> str:
     return ','.join(selectors[group])
 
 
-class AbstractWebElement(collections.abc.MutableMapping):
+# MutableMapping is only generic in Python 3.9+
+class AbstractWebElement(collections.abc.MutableMapping):  # type: ignore[type-arg]
 
     """A wrapper around QtWebKit/QtWebEngine web element."""
 
@@ -131,6 +132,7 @@ class AbstractWebElement(collections.abc.MutableMapping):
         """Dispatch an event to the element.
 
         Args:
+            event: The name of the event.
             bubbles: Whether this event should bubble.
             cancelable: Whether this event can be cancelled.
             composed: Whether the event will trigger listeners outside of a
@@ -158,9 +160,6 @@ class AbstractWebElement(collections.abc.MutableMapping):
 
     def is_content_editable(self) -> bool:
         """Check if an element has a contenteditable attribute.
-
-        Args:
-            elem: The QWebElement to check.
 
         Return:
             True if the element has a contenteditable attribute,
@@ -232,6 +231,7 @@ class AbstractWebElement(collections.abc.MutableMapping):
             'span': ['cm-'],  # Jupyter Notebook
         }
         relevant_classes = classes[self.tag_name()]
+        # pylint: disable=consider-using-any-or-all
         for klass in self.classes():
             if any(klass.strip().startswith(e) for e in relevant_classes):
                 return True
@@ -345,18 +345,19 @@ class AbstractWebElement(collections.abc.MutableMapping):
         log.webelem.debug("Sending fake click to {!r} at position {} with "
                           "target {}".format(self, pos, click_target))
 
-        target_modifiers = {
-            usertypes.ClickTarget.normal: Qt.NoModifier,
+        target_modifiers: Dict[usertypes.ClickTarget, Qt.KeyboardModifiers] = {
+            usertypes.ClickTarget.normal: cast(Qt.KeyboardModifiers, Qt.NoModifier),
             usertypes.ClickTarget.window: Qt.AltModifier | Qt.ShiftModifier,
-            usertypes.ClickTarget.tab: Qt.ControlModifier,
-            usertypes.ClickTarget.tab_bg: Qt.ControlModifier,
+            usertypes.ClickTarget.tab: cast(Qt.KeyboardModifiers, Qt.ControlModifier),
+            usertypes.ClickTarget.tab_bg:
+                cast(Qt.KeyboardModifiers, Qt.ControlModifier),
         }
         if config.val.tabs.background:
             target_modifiers[usertypes.ClickTarget.tab] |= Qt.ShiftModifier
         else:
             target_modifiers[usertypes.ClickTarget.tab_bg] |= Qt.ShiftModifier
 
-        modifiers = cast(Qt.KeyboardModifiers, target_modifiers[click_target])
+        modifiers = target_modifiers[click_target]
 
         events = [
             QMouseEvent(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton, Qt.NoModifier),

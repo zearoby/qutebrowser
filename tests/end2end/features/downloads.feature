@@ -290,6 +290,7 @@ Feature: Downloading things from a website.
         And I wait for "File successfully written." in the log
         Then the downloaded file Test title.mhtml should exist
 
+    @not_flatpak
     Scenario: Opening a mhtml download directly
         When I set downloads.location.prompt to true
         And I open /
@@ -404,18 +405,21 @@ Feature: Downloading things from a website.
 
     ## :download-open
 
+    @not_flatpak
     Scenario: Opening a download
         When I open data/downloads/download.bin without waiting
         And I wait until the download is finished
         And I open the download
         Then "Opening *download.bin* with [*python*]" should be logged
 
+    @not_flatpak
     Scenario: Opening a download with a placeholder
         When I open data/downloads/download.bin without waiting
         And I wait until the download is finished
         And I open the download with a placeholder
         Then "Opening *download.bin* with [*python*]" should be logged
 
+    @not_flatpak
     Scenario: Opening a download with open_dispatcher set
         When I set a test python open_dispatcher
         And I open data/downloads/download.bin without waiting
@@ -423,6 +427,7 @@ Feature: Downloading things from a website.
         And I run :download-open
         Then "Opening *download.bin* with [*python*]" should be logged
 
+    @not_flatpak
     Scenario: Opening a download with open_dispatcher set and override
         When I set downloads.open_dispatcher to cat
         And I open data/downloads/download.bin without waiting
@@ -446,6 +451,7 @@ Feature: Downloading things from a website.
 
     ## opening a file directly (prompt-open-download)
 
+    @not_flatpak
     Scenario: Opening a download directly
         When I set downloads.location.prompt to true
         And I open data/downloads/download.bin without waiting
@@ -466,6 +472,7 @@ Feature: Downloading things from a website.
 
     # https://github.com/qutebrowser/qutebrowser/issues/1725
 
+    @not_flatpak
     Scenario: Directly open a download with a very long filename
         When I set downloads.location.prompt to true
         And I open data/downloads/issue1725.html
@@ -530,6 +537,7 @@ Feature: Downloading things from a website.
 
     # https://github.com/qutebrowser/qutebrowser/issues/2173
 
+    @not_flatpak
     Scenario: Remembering the temporary download directory (issue 2173)
         When I set downloads.location.prompt to true
         And I set downloads.location.suggestion to both
@@ -676,3 +684,32 @@ Feature: Downloading things from a website.
         When I set downloads.location.prompt to false
         And I open 500-inline
         Then the error "Download error: *INTERNAL SERVER ERROR" should be shown
+
+    ## External download path fileselector
+
+    Scenario: Select download path
+        When I set downloads.location.prompt to true
+        And I setup a fake folder fileselector selecting "(tmpdir)(dirsep)downloads(dirsep)subdir" and writes to a temporary file
+        And I open data/downloads/downloads.html
+        And I run :click-element id download
+        And I wait for the download prompt for "*"
+        And I run :prompt-fileselect-external
+        And I wait until the download is finished
+        Then the downloaded file subdir/download.bin should exist
+
+    Scenario: No download folder chosen
+        When I set downloads.location.prompt to true
+        And I set fileselect.folder.command to ['echo', '{}']
+        And I open data/downloads/downloads.html
+        And I run :click-element id download
+        And I wait for the download prompt for "*"
+        And I run :prompt-fileselect-external
+        Then the message "No folder chosen." should be shown
+        And "No prompts left, hiding prompt container." should not be logged
+
+    Scenario: Using :prompt-fileselect-external with other prompt
+        When I open data/prompt/jsprompt.html
+        And I run :click-element id button
+        And I wait for "Asking question *" in the log
+        And I run :prompt-fileselect-external
+        Then the error "Can only launch external fileselect for FilenamePrompt, not LineEditPrompt" should be shown

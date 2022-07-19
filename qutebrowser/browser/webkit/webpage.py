@@ -21,7 +21,6 @@
 
 import html
 import functools
-from typing import cast
 
 from PyQt5.QtCore import pyqtSlot, pyqtSignal, Qt, QUrl, QPoint
 from PyQt5.QtGui import QDesktopServices
@@ -199,7 +198,7 @@ class BrowserPage(QWebPage):
             return super().chooseFile(parent_frame, suggested_file)
 
         assert handler == "external", handler
-        selected = shared.choose_file(multiple=False)
+        selected = shared.choose_file(qb_mode=shared.FileSelectionMode.single_file)
         if not selected:
             return ''
         else:
@@ -229,7 +228,7 @@ class BrowserPage(QWebPage):
             return True
 
         assert handler == "external", handler
-        files.fileNames = shared.choose_file(multiple=True)
+        files.fileNames = shared.choose_file(shared.FileSelectionMode.multiple_files)
         return True
 
     def shutdown(self):
@@ -241,6 +240,7 @@ class BrowserPage(QWebPage):
         if download_manager.has_downloads_with_nam(nam):
             nam.setParent(download_manager)
         else:
+            assert isinstance(nam, networkmanager.NetworkManager), nam
             nam.shutdown()
 
     def display_content(self, reply, mimetype):
@@ -343,7 +343,7 @@ class BrowserPage(QWebPage):
 
         for script in toload:
             if frame is self.mainFrame() or script.runs_on_sub_frames:
-                log.webview.debug('Running GM script: {}'.format(script.name))
+                log.webview.debug(f'Running GM script: {script}')
                 frame.evaluateJavaScript(script.code())
 
     @pyqtSlot('QWebFrame*', 'QWebPage::Feature')
@@ -357,7 +357,7 @@ class BrowserPage(QWebPage):
             return
 
         options = {
-            QWebPage.Notifications: 'content.notifications',
+            QWebPage.Notifications: 'content.notifications.enabled',
             QWebPage.Geolocation: 'content.geolocation',
         }
         messages = {
@@ -371,11 +371,10 @@ class BrowserPage(QWebPage):
             self.setFeaturePermission, frame, feature,
             QWebPage.PermissionDeniedByUser)
 
-        url = frame.url().adjusted(cast(QUrl.FormattingOptions,
-                                        QUrl.RemoveUserInfo |
-                                        QUrl.RemovePath |
-                                        QUrl.RemoveQuery |
-                                        QUrl.RemoveFragment))
+        url = frame.url().adjusted(QUrl.RemoveUserInfo |  # type: ignore[operator]
+                                   QUrl.RemovePath |
+                                   QUrl.RemoveQuery |
+                                   QUrl.RemoveFragment)
         question = shared.feature_permission(
             url=url,
             option=options[feature], msg=messages[feature],

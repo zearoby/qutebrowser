@@ -65,11 +65,11 @@ import re
 import dataclasses
 import mmap
 import pathlib
-from typing import IO, ClassVar, Dict, Optional, Tuple, cast
+from typing import Any, IO, ClassVar, Dict, Optional, Tuple, cast
 
 from PyQt5.QtCore import QLibraryInfo
 
-from qutebrowser.utils import log
+from qutebrowser.utils import log, version
 
 
 class ParseError(Exception):
@@ -93,7 +93,7 @@ class Endianness(enum.Enum):
     big = 2
 
 
-def _unpack(fmt: str, fobj: IO[bytes]) -> Tuple:
+def _unpack(fmt: str, fobj: IO[bytes]) -> Tuple[Any, ...]:
     """Unpack the given struct format from the given file."""
     size = struct.calcsize(fmt)
     data = _safe_read(fobj, size)
@@ -141,7 +141,7 @@ class Ident:
     @classmethod
     def parse(cls, fobj: IO[bytes]) -> 'Ident':
         """Parse an ELF ident header from a file."""
-        magic, klass, data, version, osabi, abiversion = _unpack(cls._FORMAT, fobj)
+        magic, klass, data, elfversion, osabi, abiversion = _unpack(cls._FORMAT, fobj)
 
         try:
             bitness = Bitness(klass)
@@ -153,7 +153,7 @@ class Ident:
         except ValueError:
             raise ParseError(f"Invalid endianness {data}")
 
-        return cls(magic, bitness, endianness, version, osabi, abiversion)
+        return cls(magic, bitness, endianness, elfversion, osabi, abiversion)
 
 
 @dataclasses.dataclass
@@ -270,7 +270,7 @@ def _find_versions(data: bytes) -> Versions:
     correctly: https://github.com/python/typeshed/issues/1467
     """
     match = re.search(
-        br'QtWebEngine/([0-9.]+) Chrome/([0-9.]+)',
+        br'\x00QtWebEngine/([0-9.]+) Chrome/([0-9.]+)\x00',
         data,
     )
     if match is None:
@@ -310,12 +310,19 @@ def _parse_from_file(f: IO[bytes]) -> Versions:
 
 def parse_webenginecore() -> Optional[Versions]:
     """Parse the QtWebEngineCore library file."""
-    library_path = pathlib.Path(QLibraryInfo.location(QLibraryInfo.LibrariesPath))
+    if version.is_flatpak():
+        # Flatpak has Qt in /usr/lib/x86_64-linux-gnu, but QtWebEngine in /app/lib.
+        library_path = pathlib.Path("/app/lib")
+    else:
+        library_path = pathlib.Path(QLibraryInfo.location(QLibraryInfo.LibrariesPath))
 
-    # PyQt bundles those files with a .5 suffix
-    lib_file = library_path / 'libQt5WebEngineCore.so.5'
-    if not lib_file.exists():
+    library_name = sorted(library_path.glob('libQt5WebEngineCore.so*'))
+    if not library_name:
+        log.misc.debug(f"No QtWebEngine .so found in {library_path}")
         return None
+    else:
+        lib_file = library_name[-1]
+        log.misc.debug(f"QtWebEngine .so found at {lib_file}")
 
     try:
         with lib_file.open('rb') as f:

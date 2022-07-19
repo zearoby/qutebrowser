@@ -22,7 +22,7 @@
 import re
 import sys
 import json
-import os.path
+import pathlib
 import socket
 import dataclasses
 from http import HTTPStatus
@@ -62,7 +62,11 @@ class Request(testprocess.Line):
     def _check_status(self):
         """Check if the http status is what we expected."""
         path_to_statuses = {
-            '/favicon.ico': [HTTPStatus.OK, HTTPStatus.PARTIAL_CONTENT],
+            '/favicon.ico': [
+                HTTPStatus.OK,
+                HTTPStatus.PARTIAL_CONTENT,
+                HTTPStatus.NOT_MODIFIED,
+            ],
 
             '/does-not-exist': [HTTPStatus.NOT_FOUND],
             '/does-not-exist-2': [HTTPStatus.NOT_FOUND],
@@ -145,11 +149,9 @@ class WebserverProcess(testprocess.Process):
 
     def _random_port(self) -> int:
         """Get a random free port."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(('localhost', 0))
-        port = sock.getsockname()[1]
-        sock.close()
-        return port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(('localhost', 0))
+            return sock.getsockname()[1]
 
     def get_requests(self):
         """Get the requests to the server during this test."""
@@ -158,7 +160,7 @@ class WebserverProcess(testprocess.Process):
 
     def _parse_line(self, line):
         self._log(line)
-        started_re = re.compile(r' \* Running on https?://127\.0\.0\.1:{}/ '
+        started_re = re.compile(r' \* Running on https?://127\.0\.0\.1:{}/? '
                                 r'\(Press CTRL\+C to quit\)'.format(self.port))
         if started_re.fullmatch(line):
             self.ready.emit()
@@ -167,14 +169,12 @@ class WebserverProcess(testprocess.Process):
 
     def _executable_args(self):
         if hasattr(sys, 'frozen'):
-            executable = os.path.join(os.path.dirname(sys.executable),
-                                      self._script)
+            executable = str(pathlib.Path(sys.executable).parent / self._script)
             args = []
         else:
             executable = sys.executable
-            py_file = os.path.join(os.path.dirname(__file__),
-                                   self._script + '.py')
-            args = [py_file]
+            py_file = (pathlib.Path(__file__).parent / self._script).with_suffix('.py')
+            args = [str(py_file)]
         return executable, args
 
     def _default_args(self):

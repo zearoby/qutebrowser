@@ -21,7 +21,7 @@
 
 from qutebrowser.config import configdata, configexc
 from qutebrowser.completion.models import completionmodel, listcategory, util
-from qutebrowser.commands import runners, cmdexc
+from qutebrowser.commands import parser, cmdexc
 from qutebrowser.keyinput import keyutils
 
 
@@ -44,16 +44,22 @@ def customized_option(*, info):
 
 def list_option(*, info):
     """A CompletionModel filled with settings whose values are lists."""
-    predicate = lambda opt: (isinstance(info.config.get_obj(opt.name),
-                                        list) and not opt.no_autoconfig)
-    return _option(info, "List options", predicate)
+    return _option(
+        info,
+        "List options",
+        lambda opt: (isinstance(info.config.get_obj(opt.name), list) and
+            not opt.no_autoconfig)
+    )
 
 
 def dict_option(*, info):
     """A CompletionModel filled with settings whose values are dicts."""
-    predicate = lambda opt: (isinstance(info.config.get_obj(opt.name),
-                                        dict) and not opt.no_autoconfig)
-    return _option(info, "Dict options", predicate)
+    return _option(
+        info,
+        "Dict options",
+        lambda opt: (isinstance(info.config.get_obj(opt.name), dict) and
+            not opt.no_autoconfig)
+    )
 
 
 def _option(info, title, predicate):
@@ -78,7 +84,7 @@ def value(optname, *values, info):
 
     Args:
         optname: The name of the config option this model shows.
-        values: The values already provided on the command line.
+        *values: The values already provided on the command line.
         info: A CompletionInfo instance.
     """
     model = completionmodel.CompletionModel(column_widths=(30, 70, 0))
@@ -117,9 +123,8 @@ def _bind_current_default(key, info):
 
     cmd_text = info.keyconf.get_command(seq, 'normal')
     if cmd_text:
-        parser = runners.CommandParser()
         try:
-            cmd = parser.parse(cmd_text).cmd
+            cmd = parser.CommandParser().parse(cmd_text).cmd
         except cmdexc.NoSuchCommandError:
             data.append((cmd_text, '(Current) Invalid command!', key))
         else:
@@ -127,8 +132,7 @@ def _bind_current_default(key, info):
 
     cmd_text = info.keyconf.get_command(seq, 'normal', default=True)
     if cmd_text:
-        parser = runners.CommandParser()
-        cmd = parser.parse(cmd_text).cmd
+        cmd = parser.CommandParser().parse(cmd_text).cmd
         data.append((cmd_text, '(Default) {}'.format(cmd.desc), key))
 
     return data
@@ -139,6 +143,7 @@ def bind(key, *, info):
 
     Args:
         key: the key being bound.
+        info: A CompletionInfo instance.
     """
     model = completionmodel.CompletionModel(column_widths=(20, 60, 20))
     data = _bind_current_default(key, info)

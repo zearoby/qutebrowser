@@ -72,6 +72,13 @@ search.wrap:
     Wrap around at the top and bottom of the page when advancing through text
     matches using `:search-next` and `:search-prev`.
 
+search.wrap_messages:
+  type: Bool
+  default: true
+  desc: >-
+    Display messages when advancing through text matches at the top and bottom
+    of the page, e.g. `Search hit TOP`.
+
 new_instance_open_target:
   type:
     name: String
@@ -239,6 +246,9 @@ qt.force_platformtheme:
     based on the desktop environment.
 
 qt.process_model:
+  renamed: qt.chromium.process_model
+
+qt.chromium.process_model:
   type:
     name: String
     valid_values:
@@ -268,6 +278,9 @@ qt.process_model:
       - https://doc.qt.io/qt-5/qtwebengine-features.html#process-models
 
 qt.low_end_device_mode:
+  renamed: qt.chromium.low_end_device_mode
+
+qt.chromium.low_end_device_mode:
   type:
     name: String
     valid_values:
@@ -283,6 +296,39 @@ qt.low_end_device_mode:
 
     This improves the RAM usage of renderer processes, at the expense of
     performance.
+
+qt.chromium.sandboxing:
+  type:
+    name: String
+    valid_values:
+      - enable-all: Enable all available sandboxing mechanisms.
+      - disable-seccomp-bpf: Disable the Seccomp BPF filter sandbox (Linux only).
+      - disable-all: Disable all sandboxing (**not recommended!**).
+  default: enable-all
+  backend: QtWebEngine
+  restart: true
+  no_autoconfig: true  # due to it being dangerous
+  # yamllint disable rule:line-length
+  desc: >-
+    What sandboxing mechanisms in Chromium to use.
+
+    Chromium has various sandboxing layers, which should be enabled for normal
+    browser usage. Mainly for testing and development, it's possible to disable
+    individual sandboxing layers via this setting.
+
+    Open `chrome://sandbox` to see the current sandbox status.
+
+    Changing this setting is only recommended if you know what you're doing, as
+    it **disables one of Chromium's security layers**. To avoid sandboxing being
+    accidentally disabled persistently, this setting can only be set via
+    `config.py`, not via `:set`.
+
+    See the Chromium documentation for more details:
+
+    - https://chromium.googlesource.com/chromium/src/\+/HEAD/docs/linux/sandboxing.md[Linux]
+    - https://chromium.googlesource.com/chromium/src/\+/HEAD/docs/design/sandbox.md[Windows]
+    - https://chromium.googlesource.com/chromium/src/\+/HEAD/docs/design/sandbox_faq.md[FAQ (Windows-centric)]
+  # yamllint enable rule:line-length
 
 qt.highdpi:
   type: Bool
@@ -440,6 +486,16 @@ content.cookies.accept:
     If this setting is used with URL patterns, the pattern gets applied to the
     origin/first party URL of the page making the request, not the request URL.
 
+    With QtWebEngine 5.15.0+, paths will be stripped from URLs, so URL patterns
+    using paths will not match. With QtWebEngine 5.15.2+, subdomains are
+    additionally stripped as well, so you will typically need to set this
+    setting for `example.com` when the cookie is set on
+    `somesubdomain.example.com` for it to work properly.
+
+    To debug issues with this setting, start qutebrowser with `--debug
+    --logfilter network --debug-flag log-cookies` which will show all cookies
+    being set.
+
 content.cookies.store:
   default: true
   type: Bool
@@ -518,12 +574,56 @@ content.frame_flattening:
 
     This will flatten all the frames to become one scrollable page.
 
+content.prefers_reduced_motion:
+  default: false
+  type: Bool
+  backend:
+    QtWebEngine: Qt 5.14
+    QtWebKit: false
+  restart: true
+  desc: >-
+    Request websites to minimize non-essentials animations and motion.
+
+    This results in the `prefers-reduced-motion` CSS media query to evaluate to
+    `reduce` (rather than `no-preference`).
+
+    On Windows, if this setting is set to False, the system-wide animation
+    setting is considered.
+
 content.site_specific_quirks:
+  renamed: content.site_specific_quirks.enabled
+
+content.site_specific_quirks.enabled:
   default: true
   restart: true
   type: Bool
   desc: 'Enable quirks (such as faked user agent headers) needed to get
       specific sites to work properly.'
+
+content.site_specific_quirks.skip:
+  type:
+    name: FlagList
+    valid_values:
+      - ua-whatsapp
+      - ua-google
+      - ua-slack
+      - ua-googledocs
+      - js-whatsapp-web
+      - js-discord
+      - js-string-replaceall
+      - js-globalthis
+      - js-object-fromentries
+      - misc-krunker
+      - misc-mathml-darkmode
+    none_ok: true
+  default: ["js-string-replaceall"]
+  desc: >-
+    Disable a list of named quirks.
+
+    The js-string-replaceall quirk is needed for Nextcloud Calendar < 2.2.0 with
+    QtWebEngine < 5.15.3. However, the workaround is not fully compliant to the
+    ECMAScript spec and might cause issues on other websites, so it's disabled by
+    default.
 
 # emacs: '
 
@@ -544,6 +644,7 @@ content.headers.accept_language:
   type:
     name: String
     none_ok: true
+    encoding: ascii
   supports_pattern: true
   default: en-US,en;q=0.9
   desc: >-
@@ -561,6 +662,7 @@ content.headers.custom:
     valtype:
       name: String
       encoding: ascii
+      none_ok: true
     none_ok: true
   supports_pattern: true
   desc: Custom headers for qutebrowser HTTP requests.
@@ -594,7 +696,9 @@ content.headers.referer:
     When to send the Referer header.
 
     The Referer header tells websites from which website you were coming from
-    when visiting them.
+    when visiting them. Note that with QtWebEngine, websites can override this
+    preference by setting the `Referrer-Policy:` header, so that any websites
+    visited from them get the full referer.
 
     No restart is needed with QtWebKit.
 
@@ -605,6 +709,7 @@ content.headers.user_agent:
       Safari/{webkit_version}'
   type:
     name: FormatString
+    encoding: ascii
     fields:
       - os_info
       - webkit_version
@@ -620,15 +725,15 @@ content.headers.user_agent:
       # 'ua_fetch.py'
       # Vim-protip: Place your cursor below this comment and run
       # :r!python scripts/dev/ua_fetch.py
-      - - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like
-          Gecko) Chrome/87.0.4280.66 Safari/537.36"
-        - Chrome 87 Linux
       - - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
-          like Gecko) Chrome/87.0.4280.66 Safari/537.36"
-        - Chrome 87 Win10
+          like Gecko) Chrome/97.0.4692.99 Safari/537.36"
+        - Chrome 97 Win10
       - - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
-          (KHTML, like Gecko) Chrome/87.0.4280.67 Safari/537.36"
-        - Chrome 87 macOS
+          (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36"
+        - Chrome 97 macOS
+      - - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like
+          Gecko) Chrome/97.0.4692.99 Safari/537.36"
+        - Chrome 97 Linux
   supports_pattern: true
   desc: |
     User agent to send.
@@ -690,6 +795,15 @@ content.blocking.hosts.lists:
     case of a directory, all files in the directory are read as adblock lists.
 
     The file `~/.config/qutebrowser/blocked-hosts` is always read if it exists.
+
+content.blocking.hosts.block_subdomains:
+  default: true
+  type: Bool
+  desc: >-
+    Block subdomains of blocked hosts.
+
+    Note: If only a single subdomain is blocked but should be allowed, consider
+    using `content.blocking.whitelist` instead.
 
 content.blocking.method:
   default: auto
@@ -762,9 +876,14 @@ content.javascript.alert:
   type: Bool
   desc: Show javascript alerts.
 
-content.javascript.can_access_clipboard:
-  default: false
-  type: Bool
+content.javascript.clipboard:
+  default: none
+  type:
+    name: String
+    valid_values:
+      - none: Disable access to clipboard.
+      - access: Allow reading from and writing to the clipboard.
+      - access-paste: Allow accessing the clipboard and pasting clipboard content.
   supports_pattern: true
   desc: >-
     Allow JavaScript to read from or write to the clipboard.
@@ -881,6 +1000,9 @@ content.netrc_file:
     If unset, `~/.netrc` is used.
 
 content.notifications:
+  renamed: content.notifications.enabled
+
+content.notifications.enabled:
   default: ask
   type: BoolAsk
   supports_pattern: true
@@ -889,15 +1011,70 @@ content.notifications:
     QtWebKit: true
   desc: Allow websites to show notifications.
 
+content.notifications.presenter:
+  default: auto
+  type:
+    name: String
+    valid_values:
+      - auto: Tries `libnotify`, `systray` and `messages`, uses the first one available
+            without showing error messages.
+      - qt: Use Qt's native notification presenter, based on a system tray icon.
+            Switching from or to this value requires a restart of qutebrowser.
+            Recommended over `systray` on PyQt 5.14.
+      - libnotify: Shows messages via DBus in a libnotify-compatible way. If DBus isn't
+            available, falls back to `systray` or `messages`, but shows an error
+            message.
+      - systray: Use a notification presenter based on a systray icon. Falls back to
+            `libnotify` or `messages` if not systray is available. This is a
+            reimplementation of the `qt` setting value, but with the possibility to
+            switch to it at runtime.
+      - messages: Show notifications as qutebrowser messages. Most notification features
+            aren't available.
+      - herbe: (experimental!) Show notifications using herbe (github.com/dudik/herbe).
+            Most notification features aren't available.
+  backend:
+    QtWebEngine: Qt 5.14
+    QtWebKit: false
+  desc: >-
+    What notification presenter to use for web notifications.
+
+    Note that not all implementations support all features of notifications:
+
+    - With PyQt 5.14, any setting other than `qt` does not support  the `click` and
+      `close` events, as well as the `tag` option to replace existing notifications.
+    - The `qt` and `systray` options only support showing one notification at the time
+      and ignore the `tag` option to replace existing notifications.
+    - The `herbe` option only supports showing one notification at the time and doesn't
+      show icons.
+    - The `messages` option doesn't show icons and doesn't support the `click` and
+      `close` events.
+
+content.notifications.show_origin:
+  default: true
+  type: Bool
+  supports_pattern: true
+  backend:
+    QtWebEngine: Qt 5.14
+    QtWebKit: false
+  desc: >-
+    Whether to show the origin URL for notifications.
+
+    Note that URL patterns with this setting only get matched against the origin part of
+    the URL, so e.g. paths in patterns will never match.
+
+    Note that with the `qt` presenter, origins are never shown.
+
 content.pdfjs:
   default: false
   type: Bool
   supports_pattern: true
   desc: >-
-    Allow pdf.js to view PDF files in the browser.
+    Display PDF files via PDF.js in the browser without showing a download prompt.
 
     Note that the files can still be downloaded by clicking the download button
-    in the pdf.js viewer.
+    in the pdf.js viewer. With this set to `false`, the `:prompt-open-download
+    --pdfjs` command (bound to `<Ctrl-p>` by default) can be used in the
+    download prompt.
 
 content.persistent_storage:
   default: ask
@@ -937,7 +1114,8 @@ content.proxy:
     `http://...` URL.
 
     Note that with QtWebEngine, it will take a couple of seconds until the
-    change is applied, if this value is changed at runtime.
+    change is applied, if this value is changed at runtime. Authentication for
+    SOCKS proxies isn't supported due to Chromium limitations.
 
 content.proxy_dns_requests:
   default: true
@@ -953,11 +1131,22 @@ content.register_protocol_handler:
   desc: Allow websites to register protocol handlers via
     `navigator.registerProtocolHandler`.
 
-content.ssl_strict:
+content.tls.certificate_errors:
   default: ask
-  type: BoolAsk
+  type:
+    name: String
+    valid_values:
+      - ask: Ask how to proceed for every certificate error (unless non-overridable due
+            to HSTS).
+      - ask-block-thirdparty: Ask how to proceed for normal page loads, but silently
+            block resource loads.
+      - block: Automatically block loading on certificate errors.
+      - load-insecurely: Force loading pages despite certificate errors. This is
+            *insecure* and should be avoided. Instead of using this, consider fixing the
+            underlying issue or importing a self-signed certificate via `certutil` (or
+            Chromium) instead.
   supports_pattern: true
-  desc: Validate SSL handshakes.
+  desc: How to proceed on TLS certificate errors.
 
 content.user_stylesheets:
   type:
@@ -1221,6 +1410,18 @@ downloads.position:
   default: top
   desc: Where to show the downloaded files.
 
+downloads.prevent_mixed_content:
+  type: Bool
+  default: true
+  supports_pattern: true
+  desc:
+    Automatically abort insecure (HTTP) downloads originating from secure
+    (HTTPS) pages.
+
+    For per-domain settings, the relevant URL is the URL initiating the
+    download, not the URL the download itself is coming from. It's not
+    recommended to set this setting to false globally.
+
 downloads.remove_finished:
   default: -1
   type:
@@ -1248,11 +1449,15 @@ editor.command:
     * `{line0}`: Same as `{line}`, but starting from index 0.
     * `{column0}`: Same as `{column}`, but starting from index 0.
 
-
 editor.encoding:
   type: Encoding
   default: utf-8
   desc: Encoding to use for the editor.
+
+editor.remove_file:
+  default: true
+  type: Bool
+  desc: Delete the temporary file upon closing the editor.
 
 ## fileselect
 
@@ -1278,6 +1483,8 @@ fileselect.single_file.command:
       - ['["xterm", "-e", "ranger", "--choosefile={}"]', "Ranger in xterm"]
       - ['["xterm", "-e", "vifm", "--choose-files", "{}"]', "vifm in xterm"]
       - ['["xterm", "-e", "nnn", "-p", "{}"]', "nnn in xterm"]
+      - ['["xterm", "-e", "fff", "-p", "{}"]', "fff in xterm"]
+      - ['["xterm", "-e", "lf", "-selection-path", "{}"]', "lf in xterm"]
   default: ['xterm', '-e', 'ranger', '--choosefile={}']
   desc: >-
     Command (and arguments) to use for selecting a single file in forms.
@@ -1296,11 +1503,31 @@ fileselect.multiple_files.command:
       - ['["xterm", "-e", "ranger", "--choosefiles={}"]', "Ranger in xterm"]
       - ['["xterm", "-e", "vifm", "--choose-files", "{}"]', "vifm in xterm"]
       - ['["xterm", "-e", "nnn", "-p", "{}"]', "nnn in xterm"]
+      - ['["xterm", "-e", "fff", "-p", "{}"]', "fff in xterm"]
+      - ['["xterm", "-e", "lf", "-selection-path", "{}"]', "lf in xterm"]
   default: ['xterm', '-e', 'ranger', '--choosefiles={}']
   desc: >-
     Command (and arguments) to use for selecting multiple files in forms.
     The command should write the selected file paths to the specified file or to stdout,
     separated by newlines.
+
+    The following placeholders are defined:
+
+    * `{}`: Filename of the file to be written to. If not contained in any argument, the
+      standard output of the command is read instead.
+
+fileselect.folder.command:
+  type:
+    name: ShellCommand
+    placeholder: false
+    completions:
+      - ['["xterm", "-e", "ranger", "--choosedir={}"]', "Ranger in xterm"]
+      - ['["xterm", "-e", "vifm", "--choose-dir", "{}"]', "vifm in xterm"]
+      - ['["xterm", "-e", "nnn", "-p", "{}"]', "nnn in xterm"]
+  default: ['xterm', '-e', 'ranger', '--choosedir={}']
+  desc: >-
+    Command (and arguments) to use for selecting a single folder in forms.
+    The command should write the selected folder path to the specified file or stdout.
 
     The following placeholders are defined:
 
@@ -1460,11 +1687,17 @@ hints.selectors:
       - '[role="link"]'
       - '[role="option"]'
       - '[role="button"]'
+      - '[role="tab"]'
+      - '[role="checkbox"]'
+      - '[role="menuitem"]'
+      - '[role="menuitemcheckbox"]'
+      - '[role="menuitemradio"]'
+      - '[role="treeitem"]'
       - '[ng-click]'
       - '[ngClick]'
       - '[data-ng-click]'
       - '[x-ng-click]'
-      - '[tabindex]'
+      - '[tabindex]:not([tabindex="-1"])'
     links:
       - 'a[href]'
       - 'area[href]'
@@ -1608,10 +1841,45 @@ input.spatial_navigation:
     Enable spatial navigation.
 
     Spatial navigation consists in the ability to navigate between focusable
-    elements in a Web page, such as hyperlinks and form controls, by using
-    Left, Right, Up and Down arrow keys. For example, if the user presses the
-    Right key, heuristics determine whether there is an element he might be
-    trying to reach towards the right and which element he probably wants.
+    elements, such as hyperlinks and form controls, on a web page by using the
+    Left, Right, Up and Down arrow keys. For example, if a user presses the
+    Right key, heuristics determine whether there is an element they might be
+    trying to reach towards the right and which element they probably want.
+
+input.media_keys:
+  default: true
+  type: Bool
+  backend:
+    QtWebEngine: Qt 5.14
+    QtWebKit: false
+  restart: true
+  desc: >-
+    Whether the underlying Chromium should handle media keys.
+
+    On Linux, disabling this also disables Chromium's MPRIS integration.
+
+input.match_counts:
+  default: true
+  type: Bool
+  desc: >-
+    Interpret number prefixes as counts for bindings.
+
+    This enables for vi-like bindings that can be prefixed with a number to
+    indicate a count.
+    Disabling it allows for emacs-like bindings where number keys are passed
+    through (according to `input.forward_unbound_keys`) instead.
+
+input.mode_override:
+  default: null
+  type:
+    name: String
+    none_ok: true
+    valid_values:
+      - normal
+      - insert
+      - passthrough
+  supports_pattern: true
+  desc: Mode to change to when focusing on a tab/URL changes.
 
 ## keyhint
 
@@ -1790,19 +2058,25 @@ statusbar.widgets:
   type:
     name: List
     valtype:
-      name: String
+      name: StatusbarWidget
       valid_values:
         - url: "Current page URL."
         - scroll: "Percentage of the current page position like `10%`."
         - scroll_raw: "Raw percentage of the current page position like `10`."
         - history: "Display an arrow when possible to go back/forward in
           history."
+        - search_match: "A match count when searching, e.g. `Match [2/10]`."
         - tabs: "Current active tab, e.g. `2`."
         - keypress: "Display pressed keys when composing a vi command."
         - progress: "Progress bar for the current page loading."
+        - 'text:foo': "Display the static text after the colon, `foo` in the example."
+        - clock: "Display current time. The format can be changed by adding a
+         format string via `clock:...`. For supported format strings, see
+         https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes[the
+         Python datetime documentation]."
     none_ok: true
-  default: ['keypress', 'url', 'scroll', 'history', 'tabs', 'progress']
-  desc: List of widgets displayed in the statusbar.
+  default: ['keypress', 'search_match', 'url', 'scroll', 'history', 'tabs', 'progress']
+  desc: "List of widgets displayed in the statusbar."
 
 ## tabs
 
@@ -1973,6 +2247,7 @@ tabs.title.format:
       - title_sep
       - index
       - aligned_index
+      - relative_index
       - id
       - scroll_pos
       - host
@@ -1992,6 +2267,7 @@ tabs.title.format:
     * `{index}`: Index of this tab.
     * `{aligned_index}`: Index of this tab padded with spaces to have the same
       width.
+    * `{relative_index}`: Index of this tab relative to the current tab.
     * `{id}`: Internal tab ID of this tab.
     * `{scroll_pos}`: Page scroll position.
     * `{host}`: Host of the current web page.
@@ -2012,6 +2288,7 @@ tabs.title.format_pinned:
       - title_sep
       - index
       - aligned_index
+      - relative_index
       - id
       - scroll_pos
       - host
@@ -2608,6 +2885,11 @@ colors.prompts.bg:
   type: QssColor
   desc: Background color for prompts.
 
+colors.prompts.selected.fg:
+  default: white
+  type: QssColor
+  desc: Foreground color for the selected item in filename prompts.
+
 colors.prompts.selected.bg:
   default: grey
   type: QssColor
@@ -3134,6 +3416,7 @@ fonts.tabs.unselected:
 
 fonts.web.family.standard:
   default: ''
+  supports_pattern: true
   type:
     name: FontFamily
     none_ok: true
@@ -3141,6 +3424,7 @@ fonts.web.family.standard:
 
 fonts.web.family.fixed:
   default: ''
+  supports_pattern: true
   type:
     name: FontFamily
     none_ok: true
@@ -3148,6 +3432,7 @@ fonts.web.family.fixed:
 
 fonts.web.family.serif:
   default: ''
+  supports_pattern: true
   type:
     name: FontFamily
     none_ok: true
@@ -3155,6 +3440,7 @@ fonts.web.family.serif:
 
 fonts.web.family.sans_serif:
   default: ''
+  supports_pattern: true
   type:
     name: FontFamily
     none_ok: true
@@ -3162,6 +3448,7 @@ fonts.web.family.sans_serif:
 
 fonts.web.family.cursive:
   default: ''
+  supports_pattern: true
   type:
     name: FontFamily
     none_ok: true
@@ -3169,6 +3456,7 @@ fonts.web.family.cursive:
 
 fonts.web.family.fantasy:
   default: ''
+  supports_pattern: true
   type:
     name: FontFamily
     none_ok: true
@@ -3181,6 +3469,7 @@ fonts.web.family.fantasy:
 
 fonts.web.size.default:
   default: 16
+  supports_pattern: true
   type:
     name: Int
     minval: 1
@@ -3189,6 +3478,7 @@ fonts.web.size.default:
 
 fonts.web.size.default_fixed:
   default: 13
+  supports_pattern: true
   type:
     name: Int
     minval: 1
@@ -3197,6 +3487,7 @@ fonts.web.size.default_fixed:
 
 fonts.web.size.minimum:
   default: 0
+  supports_pattern: true
   type:
     name: Int
     minval: 0
@@ -3207,6 +3498,7 @@ fonts.web.size.minimum_logical:
   # This is 0 as default on QtWebKit, and 6 on QtWebEngine - so let's
   # just go for 6 here.
   default: 6
+  supports_pattern: true
   type:
     name: Int
     minval: 0
@@ -3232,13 +3524,20 @@ bindings.key_mappings:
     keytype: Key
     valtype: Key
   desc: >-
-    This setting can be used to map keys to other keys.
+    Map keys to other keys, so that they are equivalent in all modes.
 
     When the key used as dictionary-key is pressed, the binding for the key
     used as dictionary-value is invoked instead.
 
-    This is useful for global remappings of keys, for example to map Ctrl-[ to
-    Escape.
+    This is useful for global remappings of keys, for example to map <Ctrl-[> to
+    <Escape>.
+
+    NOTE: This should only be used if two keys should always be equivalent, i.e. for
+    things like <Enter> (keypad) and <Return> (non-keypad). For normal command bindings,
+    qutebrowser works differently to vim: You always bind keys to commands, usually via
+    `:bind` or `config.bind()`. Instead of using this setting, consider finding the
+    command a key is bound to (e.g. via `:bind gg`) and then binding the same command to
+    the desired key.
 
     Note that when a key is bound (via `bindings.default` or
     `bindings.commands`), the mapping is ignored.
@@ -3268,7 +3567,7 @@ bindings.default:
       <Ctrl-Shift-W>: close
       D: tab-close -o
       co: tab-only
-      T: tab-focus
+      T: set-cmd-text -sr :tab-focus
       gm: tab-move
       gK: tab-move -
       gJ: tab-move +
@@ -3450,6 +3749,7 @@ bindings.default:
       <Ctrl-E>: edit-text
       <Shift-Ins>: insert-text -- {primary}
       <Escape>: mode-leave
+      <Shift-Escape>: fake-key <Escape>
     hint:
       <Return>: hint-follow
       <Ctrl-R>: hint --rapid links tab-bg
@@ -3484,7 +3784,8 @@ bindings.default:
       <Ctrl-U>: rl-unix-line-discard
       <Ctrl-K>: rl-kill-line
       <Alt-D>: rl-kill-word
-      <Ctrl-W>: rl-unix-word-rubout
+      <Ctrl-W>: rl-rubout " "
+      <Ctrl-Shift-W>: rl-filename-rubout
       <Alt-Backspace>: rl-backward-kill-word
       <Ctrl-Y>: rl-yank
       <Ctrl-?>: rl-delete-char
@@ -3500,6 +3801,7 @@ bindings.default:
       <Down>: prompt-item-focus next
       <Alt-Y>: prompt-yank
       <Alt-Shift-Y>: prompt-yank --sel
+      <Alt-E>: prompt-fileselect-external
       <Ctrl-B>: rl-backward-char
       <Ctrl-F>: rl-forward-char
       <Alt-B>: rl-backward-word
@@ -3509,7 +3811,8 @@ bindings.default:
       <Ctrl-U>: rl-unix-line-discard
       <Ctrl-K>: rl-kill-line
       <Alt-D>: rl-kill-word
-      <Ctrl-W>: rl-unix-word-rubout
+      <Ctrl-W>: rl-rubout " "
+      <Ctrl-Shift-W>: rl-filename-rubout
       <Alt-Backspace>: rl-backward-kill-word
       <Ctrl-?>: rl-delete-char
       <Ctrl-H>: rl-backward-delete-char
@@ -3646,9 +3949,7 @@ bindings.commands:
       that single keys can't be bound in this mode.
 
     * passthrough: Similar to insert mode, but passes through all keypresses
-      except `<Escape>` to leave the mode. It might be useful to bind
-      `<Escape>` to some other key in this mode if you want to be able to send
-      an Escape key to the website as well. Note that single keys can't be
+      except `<Shift+Escape>` to leave the mode. Note that single keys can't be
       bound in this mode.
 
     * command: Entered when pressing the `:` key in order to enter a command.

@@ -21,6 +21,7 @@
 
 import collections
 import os
+import pathlib
 import random
 import string
 import time
@@ -30,7 +31,7 @@ from unittest import mock
 import hypothesis
 import hypothesis.strategies as hst
 import pytest
-from PyQt5.QtCore import QUrl, QDateTime
+from PyQt5.QtCore import QUrl, QDateTime, QProcess
 try:
     from PyQt5.QtWebEngineWidgets import (
         QWebEngineHistory, QWebEngineHistoryItem
@@ -38,7 +39,7 @@ try:
 except ImportError:
     pass
 
-from qutebrowser.misc import objects
+from qutebrowser.misc import objects, guiprocess
 from qutebrowser.completion import completer
 from qutebrowser.completion.models import (
     configmodel, listcategory, miscmodels, urlmodel, filepathcategory)
@@ -75,7 +76,7 @@ def _check_completions(model, expected):
     assert sum(model.column_widths) == 100
 
 
-@pytest.fixture()
+@pytest.fixture
 def cmdutils_stub(monkeypatch, stubs):
     """Patch the cmdutils module to provide fake commands."""
     return monkeypatch.setattr(objects, 'commands', {
@@ -92,7 +93,7 @@ def cmdutils_stub(monkeypatch, stubs):
     })
 
 
-@pytest.fixture()
+@pytest.fixture
 def configdata_stub(config_stub, monkeypatch, configdata_init):
     """Patch the configdata module to provide fake data."""
     monkeypatch.setattr(configdata, 'DATA', collections.OrderedDict([
@@ -426,11 +427,11 @@ def test_filesystem_completion(qtmodeltester, config_stub, info,
         homedir = str(local_files_path)
         monkeypatch.setenv('HOME', homedir)  # POSIX
         monkeypatch.setenv('USERPROFILE', homedir)  # Windows
-        assert os.path.expanduser('~') == homedir
+        assert str(pathlib.Path.home()) == homedir
 
         base = '~'
-        expected_1 = os.path.join('~', 'file1.txt')
-        expected_2 = os.path.join('~', 'file2.txt')
+        expected_1 = str(pathlib.Path('~') / 'file1.txt')
+        expected_2 = str(pathlib.Path('~') / 'file2.txt')
 
     config_stub.val.completion.open_categories = ['filesystem']
     model = urlmodel.url(info=info)
@@ -461,8 +462,7 @@ def test_filesystem_completion_model_interface(info, local_files_path):
 @hypothesis.given(
     as_uri=hst.booleans(),
     add_sep=hst.booleans(),
-    text=hst.text(alphabet=hst.characters(
-        blacklist_categories=['Cc'], blacklist_characters='\x00')),
+    text=hst.text(),
 )
 def test_filesystem_completion_hypothesis(info, as_uri, add_sep, text):
     if as_uri:
@@ -470,6 +470,12 @@ def test_filesystem_completion_hypothesis(info, as_uri, add_sep, text):
     if add_sep:
         text += os.sep
 
+    model = filepathcategory.FilePathCategory('filepaths')
+    model.set_pattern(text)
+
+
+@pytest.mark.parametrize('text', ['~\ud800', '~\x00'])
+def test_filesystem_completion_corner_cases(info, text):
     model = filepathcategory.FilePathCategory('filepaths')
     model.set_pattern(text)
 
@@ -854,6 +860,34 @@ def test_tab_completion_delete(qtmodeltester, fake_web_tab, win_registry,
     # sanity checks
     assert model.data(parent) == "0"
     assert model.data(idx) == '0/2'
+
+    model.delete_cur_item(idx)
+    actual = [tab.url() for tab in tabbed_browser_stubs[0].widget.tabs]
+    assert actual == [QUrl('https://github.com'),
+                      QUrl('https://duckduckgo.com')]
+
+
+def test_tab_focus_completion_delete(qtmodeltester, fake_web_tab, win_registry,
+                              tabbed_browser_stubs, info):
+    """Verify closing a tab by deleting it from the completion widget."""
+    tabbed_browser_stubs[0].widget.tabs = [
+        fake_web_tab(QUrl('https://github.com'), 'GitHub', 0),
+        fake_web_tab(QUrl('https://wikipedia.org'), 'Wikipedia', 1),
+        fake_web_tab(QUrl('https://duckduckgo.com'), 'DuckDuckGo', 2)
+    ]
+    tabbed_browser_stubs[1].widget.tabs = [
+        fake_web_tab(QUrl('https://wiki.archlinux.org'), 'ArchWiki', 0),
+    ]
+    model = miscmodels.tab_focus(info=info)
+    model.set_pattern('')
+    qtmodeltester.check(model)
+
+    parent = model.index(0, 0)
+    idx = model.index(1, 0, parent)
+
+    # sanity checks
+    assert model.data(parent) == "Tabs"
+    assert model.data(idx) == '2'
 
     model.delete_cur_item(idx)
     actual = [tab.url() for tab in tabbed_browser_stubs[0].widget.tabs]
@@ -1444,6 +1478,53 @@ def undo_completion_retains_sort_order(tabbed_browser_stubs, info):
         for idx in range(1, 11)
     ]
     _check_completions(model, {"Closed tabs": expected})
+
+
+def test_process_completion(monkeypatch, stubs, info):
+    monkeypatch.setattr(guiprocess, 'QProcess', stubs.FakeProcess)
+    p1 = guiprocess.GUIProcess('testprocess')
+    p2 = guiprocess.GUIProcess('testprocess')
+    p3 = guiprocess.GUIProcess('editor')
+
+    p1.pid = 1001
+    p1.cmd = 'cmd1'
+    p1.args = []
+    p1.outcome.running = False
+    p1.outcome.status = QProcess.NormalExit
+    p1.outcome.code = 0
+
+    p2.pid = 1002
+    p2.cmd = 'cmd2'
+    p2.args = []
+    p2.outcome.running = True
+
+    p3.pid = 1003
+    p3.cmd = 'cmd3'
+    p3.args = []
+    p3.outcome.running = False
+    p3.outcome.status = QProcess.NormalExit
+    p3.outcome.code = 1
+
+    monkeypatch.setattr(guiprocess, 'all_processes', {
+        1001: p1,
+        1002: p2,
+        1003: p3,
+        1004: None,  # cleaned up
+    })
+
+    model = miscmodels.process(info=info)
+    model.set_pattern('')
+
+    expected = {
+        'Testprocess': [
+            ('1002', 'running', 'cmd2'),
+            ('1001', 'successful', 'cmd1'),
+        ],
+        'Editor': [
+            ('1003', 'unsuccessful', 'cmd3'),
+        ],
+    }
+    _check_completions(model, expected)
 
 
 @hypothesis.given(text=hst.text())

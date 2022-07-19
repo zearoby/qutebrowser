@@ -156,7 +156,7 @@ def _assert_plain_key(key: Qt.Key) -> None:
 def _assert_plain_modifier(key: _ModifierType) -> None:
     """Make sure this is a modifier without a key mixed in."""
     mask = Qt.KeyboardModifierMask
-    assert not key & ~mask, hex(key)  # type: ignore[operator]
+    assert not key & ~mask, hex(key)
 
 
 def _is_printable(key: Qt.Key) -> bool:
@@ -254,9 +254,9 @@ def _modifiers_to_string(modifiers: _ModifierType) -> str:
     modifier.
     """
     _assert_plain_modifier(modifiers)
-    altgr = Qt.GroupSwitchModifier
-    if modifiers & altgr:  # type: ignore[operator]
-        modifiers &= ~altgr  # type: ignore[operator, assignment]
+    altgr = cast(Qt.KeyboardModifiers, Qt.GroupSwitchModifier)
+    if modifiers & altgr:
+        modifiers &= ~altgr
         result = 'AltGr+'
     else:
         result = ''
@@ -416,7 +416,7 @@ class KeyInfo:
             return ''
 
         text = QKeySequence(self.key).toString()
-        if not self.modifiers & Qt.ShiftModifier:  # type: ignore[operator]
+        if not self.modifiers & Qt.ShiftModifier:
             text = text.lower()
         return text
 
@@ -458,7 +458,7 @@ class KeySequence:
             assert self
         self._validate()
 
-    def _convert_key(self, key: Qt.Key) -> int:
+    def _convert_key(self, key: Union[int, Qt.KeyboardModifiers]) -> int:
         """Convert a single key for QKeySequence."""
         assert isinstance(key, (int, Qt.KeyboardModifiers)), key
         return int(key)
@@ -473,7 +473,7 @@ class KeySequence:
         """Iterate over KeyInfo objects."""
         for key_and_modifiers in self._iter_keys():
             key = Qt.Key(int(key_and_modifiers) & ~Qt.KeyboardModifierMask)
-            modifiers = Qt.KeyboardModifiers(  # type: ignore[call-overload]
+            modifiers = Qt.KeyboardModifiers(
                 int(key_and_modifiers) & Qt.KeyboardModifierMask)
             yield KeyInfo(key=key, modifiers=modifiers)
 
@@ -619,14 +619,15 @@ class KeySequence:
         # (or "Cmd") in a key binding name to actually represent what's on the
         # keyboard.
         if utils.is_mac:
+            # FIXME:qt6 Reevaluate the type ignores below
             if modifiers & Qt.ControlModifier and modifiers & Qt.MetaModifier:
                 pass
             elif modifiers & Qt.ControlModifier:
                 modifiers &= ~Qt.ControlModifier
-                modifiers |= Qt.MetaModifier
+                modifiers |= Qt.MetaModifier  # type: ignore[assignment]
             elif modifiers & Qt.MetaModifier:
                 modifiers &= ~Qt.MetaModifier
-                modifiers |= Qt.ControlModifier
+                modifiers |= Qt.ControlModifier  # type: ignore[assignment]
 
         keys = list(self._iter_keys())
         keys.append(key | int(modifiers))
@@ -648,16 +649,14 @@ class KeySequence:
         for key in self._iter_keys():
             key_seq = KeySequence(key)
             if key_seq in mappings:
-                new_seq = mappings[key_seq]
-                assert len(new_seq) == 1
-                key = new_seq[0].to_int()
-            keys.append(key)
+                keys += [info.to_int() for info in mappings[key_seq]]
+            else:
+                keys.append(key)
         return self.__class__(*keys)
 
     @classmethod
     def parse(cls, keystr: str) -> 'KeySequence':
         """Parse a keystring like <Ctrl-x> or xyz and return a KeySequence."""
-        # pylint: disable=protected-access
         new = cls()
         strings = list(_parse_keystring(keystr))
         for sub in utils.chunk(strings, cls._MAX_LEN):
@@ -667,6 +666,5 @@ class KeySequence:
         if keystr:
             assert new, keystr
 
-        # pylint: disable=protected-access
         new._validate(keystr)
         return new

@@ -42,6 +42,7 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout
 from PyQt5.QtNetwork import QNetworkCookieJar
 
 import helpers.stubs as stubsmod
+import qutebrowser
 from qutebrowser.config import (config, configdata, configtypes, configexc,
                                 configfiles, configcache, stylesheet)
 from qutebrowser.api import config as configapi
@@ -185,7 +186,7 @@ def testdata_scheme(qapp):
         pass
 
     @qutescheme.add_handler('testdata')
-    def handler(url):  # pylint: disable=unused-variable
+    def handler(url):
         file_abs = os.path.abspath(os.path.dirname(__file__))
         filename = os.path.join(file_abs, os.pardir, 'end2end',
                                 url.path().lstrip('/'))
@@ -631,20 +632,11 @@ def redirect_webengine_data(data_tmpdir, monkeypatch):
     monkeypatch.setenv('HOME', str(data_tmpdir))
 
 
-@pytest.fixture()
+@pytest.fixture
 def short_tmpdir():
     """A short temporary directory for a XDG_RUNTIME_DIR."""
     with tempfile.TemporaryDirectory() as tdir:
         yield py.path.local(tdir)  # pylint: disable=no-member
-
-
-@pytest.fixture
-def init_sql(data_tmpdir):
-    """Initialize the SQL module, and shut it down after the test."""
-    path = str(data_tmpdir / 'test.db')
-    sql.init(path)
-    yield
-    sql.close()
 
 
 class ModelValidator:
@@ -681,12 +673,20 @@ def download_stub(win_registry, tmpdir, stubs):
 
 
 @pytest.fixture
-def web_history(fake_save_manager, tmpdir, init_sql, config_stub, stubs,
+def database(data_tmpdir):
+    """Create a Database object."""
+    db = sql.Database(str(data_tmpdir / 'test.db'))
+    yield db
+    db.close()
+
+
+@pytest.fixture
+def web_history(fake_save_manager, tmpdir, database, config_stub, stubs,
                 monkeypatch):
     """Create a WebHistory object."""
     config_stub.val.completion.timestamp_format = '%Y-%m-%d'
     config_stub.val.completion.web_history.max_items = -1
-    web_history = history.WebHistory(stubs.FakeHistoryProgress())
+    web_history = history.WebHistory(database, stubs.FakeHistoryProgress())
     monkeypatch.setattr(history, 'web_history', web_history)
     return web_history
 
@@ -736,3 +736,21 @@ def webengine_versions(testdata_scheme):
     """
     pytest.importorskip('PyQt5.QtWebEngineWidgets')
     return version.qtwebengine_versions()
+
+
+@pytest.fixture(params=[True, False])
+def freezer(request, monkeypatch):
+    if request.param and not getattr(sys, 'frozen', False):
+        monkeypatch.setattr(sys, 'frozen', True, raising=False)
+        monkeypatch.setattr(sys, 'executable', qutebrowser.__file__)
+    elif not request.param and getattr(sys, 'frozen', False):
+        # Want to test unfrozen tests, but we are frozen
+        pytest.skip("Can't run with sys.frozen = True!")
+    return request.param
+
+
+@pytest.fixture
+def fake_flatpak(monkeypatch):
+    app_id = 'org.qutebrowser.qutebrowser'
+    monkeypatch.setenv('FLATPAK_ID', app_id)
+    assert version.is_flatpak()

@@ -40,12 +40,12 @@ import qutebrowser
 from qutebrowser.browser import pdfjs, downloads, history
 from qutebrowser.config import config, configdata, configexc
 from qutebrowser.utils import (version, utils, jinja, log, message, docutils,
-                               objreg, standarddir)
+                               resources, objreg, standarddir)
+from qutebrowser.misc import guiprocess, quitter
 from qutebrowser.qt import sip
 
 
 pyeval_output = ":pyeval was never called"
-spawn_output = ":spawn was never called"
 csrf_token = None
 
 
@@ -92,7 +92,8 @@ class Redirect(Exception):
 
 # Return value: (mimetype, data) (encoded as utf-8 if a str is returned)
 _HandlerRet = Tuple[str, Union[str, bytes]]
-_Handler = TypeVar('_Handler', bound=Callable[[QUrl], _HandlerRet])
+_HandlerCallable = Callable[[QUrl], _HandlerRet]
+_Handler = TypeVar('_Handler', bound=_HandlerCallable)
 
 
 class add_handler:  # noqa: N801,N806 pylint: disable=invalid-name
@@ -105,7 +106,7 @@ class add_handler:  # noqa: N801,N806 pylint: disable=invalid-name
 
     def __init__(self, name: str) -> None:
         self._name = name
-        self._function: Optional[Callable] = None
+        self._function: Optional[_HandlerCallable] = None
 
     def __call__(self, function: _Handler) -> _Handler:
         self._function = function
@@ -127,9 +128,7 @@ def data_for_url(url: QUrl) -> Tuple[str, bytes]:
     Return:
         A (mimetype, data) tuple.
     """
-    norm_url = url.adjusted(
-        QUrl.NormalizePathSegments |  # type: ignore[arg-type]
-        QUrl.StripTrailingSlash)
+    norm_url = url.adjusted(QUrl.NormalizePathSegments | QUrl.StripTrailingSlash)
     if norm_url != url:
         raise Redirect(norm_url)
 
@@ -271,7 +270,7 @@ def qute_javascript(url: QUrl) -> _HandlerRet:
     path = url.path()
     if path:
         path = "javascript" + os.sep.join(path.split('/'))
-        return 'text/html', utils.read_file(path)
+        return 'text/html', resources.read_file(path)
     else:
         raise UrlInvalidError("No file specified")
 
@@ -283,10 +282,24 @@ def qute_pyeval(_url: QUrl) -> _HandlerRet:
     return 'text/html', src
 
 
-@add_handler('spawn-output')
-def qute_spawn_output(_url: QUrl) -> _HandlerRet:
-    """Handler for qute://spawn-output."""
-    src = jinja.render('pre.html', title='spawn output', content=spawn_output)
+@add_handler('process')
+def qute_process(url: QUrl) -> _HandlerRet:
+    """Handler for qute://process."""
+    path = url.path()[1:]
+    try:
+        pid = int(path)
+    except ValueError:
+        raise UrlInvalidError(f"Invalid PID {path}")
+
+    try:
+        proc = guiprocess.all_processes[pid]
+    except KeyError:
+        raise NotFoundError(f"No process {pid}")
+
+    if proc is None:
+        raise NotFoundError(f"Data for process {pid} got cleaned up.")
+
+    src = jinja.render('process.html', title=f'Process {pid}', proc=proc)
     return 'text/html', src
 
 
@@ -345,14 +358,14 @@ def qute_log(url: QUrl) -> _HandlerRet:
 @add_handler('gpl')
 def qute_gpl(_url: QUrl) -> _HandlerRet:
     """Handler for qute://gpl. Return HTML content as string."""
-    return 'text/html', utils.read_file('html/license.html')
+    return 'text/html', resources.read_file('html/license.html')
 
 
 def _asciidoc_fallback_path(html_path: str) -> Optional[str]:
     """Fall back to plaintext asciidoc if the HTML is unavailable."""
     path = html_path.replace('.html', '.asciidoc')
     try:
-        return utils.read_file(path)
+        return resources.read_file(path)
     except OSError:
         return None
 
@@ -372,14 +385,14 @@ def qute_help(url: QUrl) -> _HandlerRet:
     path = 'html/doc/{}'.format(urlpath)
     if not urlpath.endswith('.html'):
         try:
-            bdata = utils.read_file_binary(path)
+            bdata = resources.read_file_binary(path)
         except OSError as e:
             raise SchemeOSError(e)
         mimetype = utils.guess_mimetype(urlpath)
         return mimetype, bdata
 
     try:
-        data = utils.read_file(path)
+        data = resources.read_file(path)
     except OSError:
         asciidoc = _asciidoc_fallback_path(path)
 
@@ -437,6 +450,9 @@ def qute_settings(url: QUrl) -> _HandlerRet:
         if url.password() != csrf_token:
             message.error("Invalid CSRF token for qute://settings!")
             raise RequestDeniedError("Invalid CSRF token!")
+        if quitter.instance.is_shutting_down:
+            log.config.debug("Ignoring /set request during shutdown")
+            return 'text/html', b'error: ignored'
         return _qute_settings_set(url)
 
     # Requests to qute://settings/set should only be allowed from
@@ -575,7 +591,23 @@ def qute_resource(url: QUrl) -> _HandlerRet:
     path = url.path().lstrip('/')
     mimetype = utils.guess_mimetype(path, fallback=True)
     try:
-        data = utils.read_file_binary(path)
+        data = resources.read_file_binary(path)
     except FileNotFoundError as e:
         raise NotFoundError(str(e))
     return mimetype, data
+
+
+@add_handler('start')
+def qute_start(_url: QUrl) -> _HandlerRet:
+    """Handler for qute://start."""
+    bookmarks = sorted(objreg.get('bookmark-manager').marks.items(),
+                       key=lambda x: x[1])  # Sort by title
+    quickmarks = sorted(objreg.get('quickmark-manager').marks.items(),
+                        key=lambda x: x[0])  # Sort by name
+    searchurl = config.val.url.searchengines['DEFAULT']
+    page = jinja.render('startpage.html',
+                        title='Welcome to qutebrowser',
+                        bookmarks=bookmarks,
+                        search_url=searchurl,
+                        quickmarks=quickmarks)
+    return 'text/html', page

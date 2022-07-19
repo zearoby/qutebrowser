@@ -20,6 +20,7 @@
 """Functions that return miscellaneous completion models."""
 
 import datetime
+import itertools
 from typing import List, Sequence, Tuple
 
 from qutebrowser.config import config, configdata
@@ -102,17 +103,23 @@ def session(*, info=None):
     return model
 
 
-def _tabs(*, win_id_filter=lambda _win_id: True, add_win_id=True):
+def _tabs(*, win_id_filter=lambda _win_id: True, add_win_id=True, cur_win_id=None):
     """Helper to get the completion model for tabs/other_tabs.
 
     Args:
         win_id_filter: A filter function for window IDs to include.
                        Should return True for all included windows.
         add_win_id: Whether to add the window ID to the completion items.
+        cur_win_id: Window ID to be passed from info.win_id
     """
     def delete_tab(data):
         """Close the selected tab."""
-        win_id, tab_index = data[0].split('/')
+        if cur_win_id is None:
+            win_id, tab_index = data[0].split('/')
+        else:
+            win_id = cur_win_id
+            tab_index = data[0]
+
         tabbed_browser = objreg.get('tabbed-browser', scope='window',
                                     window=int(win_id))
         tabbed_browser.on_tab_close_requested(int(tab_index) - 1)
@@ -176,13 +183,15 @@ def other_tabs(*, info):
 
     Used for the tab-take command.
     """
-    return _tabs(win_id_filter=lambda win_id: win_id != info.win_id)
+    return _tabs(
+        win_id_filter=lambda win_id: win_id != info.win_id,
+        cur_win_id=info.win_id)
 
 
 def tab_focus(*, info):
     """A model to complete on open tabs in the current window."""
     model = _tabs(win_id_filter=lambda win_id: win_id == info.win_id,
-                  add_win_id=False)
+                  add_win_id=False, cur_win_id=info.win_id)
 
     special = [
         ("last", "Focus the last-focused tab"),
@@ -229,9 +238,7 @@ def _qdatetime_to_completion_format(qdate):
     if not qdate.isValid():
         ts = 0
     else:
-        ts = qdate.toMSecsSinceEpoch()
-        if ts < 0:
-            ts = 0
+        ts = max(qdate.toMSecsSinceEpoch(), 0)
     pydate = datetime.datetime.fromtimestamp(ts / 1000)
     return pydate.strftime(config.val.completion.timestamp_format)
 
@@ -301,4 +308,26 @@ def undo(*, info):
 
     cat = listcategory.ListCategory("Closed tabs", entries, sort=False)
     model.add_category(cat)
+    return model
+
+
+def process(*, info):
+    """A CompletionModel filled with processes."""
+    utils.unused(info)
+    from qutebrowser.misc import guiprocess
+    model = completionmodel.CompletionModel(column_widths=(10, 10, 80))
+    for what, processes in itertools.groupby(
+            (p for p in guiprocess.all_processes.values() if p is not None),
+            lambda proc: proc.what):
+
+        # put successful processes last
+        sorted_processes = sorted(
+            processes,
+            key=lambda proc: proc.outcome.state_str() == 'successful',
+        )
+
+        entries = [(str(proc.pid), proc.outcome.state_str(), str(proc))
+                   for proc in sorted_processes]
+        cat = listcategory.ListCategory(what.capitalize(), entries, sort=False)
+        model.add_category(cat)
     return model

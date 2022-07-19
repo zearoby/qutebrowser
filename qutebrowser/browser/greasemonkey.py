@@ -27,12 +27,12 @@ import functools
 import glob
 import textwrap
 import dataclasses
-from typing import cast, List, Sequence
+from typing import cast, List, Sequence, Tuple, Optional
 
 from PyQt5.QtCore import pyqtSignal, QObject, QUrl
 
 from qutebrowser.utils import (log, standarddir, jinja, objreg, utils,
-                               javascript, urlmatch, version, usertypes)
+                               javascript, urlmatch, version, usertypes, message)
 from qutebrowser.api import cmdutils
 from qutebrowser.browser import downloads
 from qutebrowser.misc import objects
@@ -67,6 +67,7 @@ class GreasemonkeyScript:
         self.runs_on_sub_frames = True
         self.jsworld = "main"
         self.name = ''
+        self.dedup_suffix = 1
 
         for name, value in properties:
             if name == 'name':
@@ -100,6 +101,23 @@ class GreasemonkeyScript:
 
     HEADER_REGEX = r'// ==UserScript==|\n+// ==/UserScript==\n'
     PROPS_REGEX = r'// @(?P<prop>[^\s]+)\s*(?P<val>.*)'
+
+    def __str__(self):
+        return self.name
+
+    def full_name(self) -> str:
+        """Get the full name of this script.
+
+        This includes a GM- prefix, its namespace (if any) and deduplication
+        counter suffix, if set.
+        """
+        parts = ['GM-']
+        if self.namespace is not None:
+            parts += [self.namespace, '/']
+        parts.append(self.name)
+        if self.dedup_suffix > 1:
+            parts.append(f"-{self.dedup_suffix}")
+        return ''.join(parts)
 
     @classmethod
     def parse(cls, source, filename=None):
@@ -209,6 +227,38 @@ class MatchingScripts:
     idle: List[GreasemonkeyScript] = dataclasses.field(default_factory=list)
 
 
+@dataclasses.dataclass
+class LoadResults:
+
+    """The results of loading all Greasemonkey scripts."""
+
+    successful: List[GreasemonkeyScript] = dataclasses.field(default_factory=list)
+    errors: List[Tuple[str, str]] = dataclasses.field(default_factory=list)
+
+    def successful_str(self) -> str:
+        """Get a string with all successfully loaded scripts.
+
+        This can be used e.g. for a message.info() call.
+        """
+        if not self.successful:
+            return "No Greasemonkey scripts loaded"
+
+        names = '\n'.join(str(script) for script in sorted(self.successful, key=str))
+        return f"Loaded Greasemonkey scripts:\n\n{names}"
+
+    def error_str(self) -> Optional[str]:
+        """Get a string with all errors during script loading.
+
+        This can be used e.g. for a message.error() call.
+        If there were no errors, None is returned.
+        """
+        if not self.errors:
+            return None
+
+        lines = '\n'.join(f"{script}: {error}" for script, error in sorted(self.errors))
+        return f"Greasemonkey scripts failed to load:\n\n{lines}"
+
+
 class GreasemonkeyMatcher:
 
     """Check whether scripts should be loaded for a given URL."""
@@ -264,9 +314,7 @@ class GreasemonkeyManager(QObject):
         self._run_idle: List[GreasemonkeyScript] = []
         self._in_progress_dls: List[downloads.AbstractDownloadItem] = []
 
-        self.load_scripts()
-
-    def load_scripts(self, *, force=False):
+    def load_scripts(self, *, force: bool = False) -> LoadResults:
         """Re-read Greasemonkey scripts from disk.
 
         The scripts are read from a 'greasemonkey' subdirectory in
@@ -275,37 +323,46 @@ class GreasemonkeyManager(QObject):
         Args:
             force: For any scripts that have required dependencies,
                    re-download them.
+
+        Return:
+            A LoadResults object describing the outcome.
         """
         self._run_start = []
         self._run_end = []
         self._run_idle = []
 
+        successful = []
+        errors = []
         for scripts_dir in _scripts_dirs():
             scripts_dir = os.path.abspath(scripts_dir)
             log.greasemonkey.debug("Reading scripts from: {}".format(scripts_dir))
+
             for script_filename in glob.glob(os.path.join(scripts_dir, '*.js')):
-                if not os.path.isfile(script_filename):
-                    continue
                 script_path = os.path.join(scripts_dir, script_filename)
-                with open(script_path, encoding='utf-8-sig') as script_file:
-                    script = GreasemonkeyScript.parse(script_file.read(),
-                                                      script_filename)
-                    if not script.name:
-                        script.name = script_filename
-                    self.add_script(script, force)
+                try:
+                    with open(script_path, encoding='utf-8-sig') as script_file:
+                        script = GreasemonkeyScript.parse(
+                            script_file.read(), script_filename)
+                        assert script.name, script
+                        self.add_script(script, force)
+                        successful.append(script)
+                except OSError as e:
+                    errors.append((os.path.basename(script_filename), str(e)))
+
         self.scripts_reloaded.emit()
+        return LoadResults(successful=successful, errors=errors)
 
     def add_script(self, script, force=False):
         """Add a GreasemonkeyScript to this manager.
 
         Args:
+            script: The GreasemonkeyScript to add.
             force: Fetch and overwrite any dependencies which are
                    already locally cached.
         """
         if script.requires:
             log.greasemonkey.debug(
-                "Deferring script until requirements are "
-                "fulfilled: {}".format(script.name))
+                f"Deferring script until requirements are fulfilled: {script}")
             self._get_required_scripts(script, force)
         else:
             self._add_script(script)
@@ -319,14 +376,13 @@ class GreasemonkeyManager(QObject):
             self._run_idle.append(script)
         else:
             if script.run_at:
-                log.greasemonkey.warning("Script {} has invalid run-at "
-                                         "defined, defaulting to "
-                                         "document-end"
-                                         .format(script.name))
+                log.greasemonkey.warning(
+                    f"Script {script} has invalid run-at defined, defaulting to "
+                    "document-end")
                 # Default as per
                 # https://wiki.greasespot.net/Metadata_Block#.40run-at
             self._run_end.append(script)
-        log.greasemonkey.debug("Loaded script: {}".format(script.name))
+        log.greasemonkey.debug(f"Loaded script: {script}")
 
     def _required_url_to_file_path(self, url):
         requires_dir = os.path.join(_scripts_dirs()[0], 'requires')
@@ -338,9 +394,8 @@ class GreasemonkeyManager(QObject):
         self._in_progress_dls.remove(download)
         if not self._add_script_with_requires(script):
             log.greasemonkey.debug(
-                "Finished download {} for script {} "
-                "but some requirements are still pending"
-                .format(download.basename, script.name))
+                f"Finished download {download.basename} for script {script} "
+                "but some requirements are still pending")
 
     def _add_script_with_requires(self, script, quiet=False):
         """Add a script with pending downloads to this GreasemonkeyManager.
@@ -357,15 +412,14 @@ class GreasemonkeyManager(QObject):
         """
         # See if we are still waiting on any required scripts for this one
         for dl in self._in_progress_dls:
-            if dl.requested_url in script.requires:
+            if dl.requested_url in script.requires:  # type: ignore[attr-defined]
                 return False
 
         # Need to add the required scripts to the IIFE now
         for url in reversed(script.requires):
             target_path = self._required_url_to_file_path(url)
             log.greasemonkey.debug(
-                "Adding required script for {} to IIFE: {}"
-                .format(script.name, url))
+                f"Adding required script for {script} to IIFE: {url}")
             with open(target_path, encoding='utf8') as f:
                 script.add_required_script(f.read())
 
@@ -392,6 +446,7 @@ class GreasemonkeyManager(QObject):
                                                   force_overwrite=True)
             download = download_manager.get(QUrl(url), target=target,
                                             auto_remove=True)
+            # FIXME:mypy Build this into downloads instead of patching here?
             download.requested_url = url
             self._in_progress_dls.append(download)
             if download.successful:
@@ -426,7 +481,7 @@ class GreasemonkeyManager(QObject):
 
 
 @cmdutils.register()
-def greasemonkey_reload(force=False):
+def greasemonkey_reload(force: bool = False, quiet: bool = False) -> None:
     """Re-read Greasemonkey scripts from disk.
 
     The scripts are read from a 'greasemonkey' subdirectory in
@@ -435,14 +490,25 @@ def greasemonkey_reload(force=False):
     Args:
         force: For any scripts that have required dependencies,
                 re-download them.
+        quiet: Suppress message after loading scripts.
     """
-    gm_manager.load_scripts(force=force)
+    result = gm_manager.load_scripts(force=force)
+    if not quiet:
+        message.info(result.successful_str())
+
+    errors = result.error_str()
+    if errors is not None:
+        message.error(errors)
 
 
 def init():
     """Initialize Greasemonkey support."""
     global gm_manager
     gm_manager = GreasemonkeyManager()
+    result = gm_manager.load_scripts()
+    errors = result.error_str()
+    if errors is not None:
+        message.error(errors)
 
     for scripts_dir in _scripts_dirs():
         try:

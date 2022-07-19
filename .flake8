@@ -16,6 +16,7 @@ exclude = .*,__pycache__,resources.py
 #       (for pytest's __tracebackhide__)
 # F401: Unused import
 # N802: function name should be lowercase
+# N818: exception name '...' should be named with an Error suffix
 # N806: variable in function should be lowercase
 # P101: format string does contain unindexed parameters
 # P102: docstring does contain unindexed parameters
@@ -39,18 +40,24 @@ exclude = .*,__pycache__,resources.py
 # A003: Builtin name for class attribute (needed for overridden methods)
 # W503: like break before binary operator
 # W504: line break after binary operator
-# FI15: __future__ import "generator_stop" missing
+# FI18: __future__ import "annotations" missing
+# PT004: fixture '{name}' does not return anything, add leading underscore
+# PT011: pytest.raises(ValueError) is too broad, set the match parameter or use a more specific exception
+# PT012: pytest.raises() block should contain a single simple statement
 ignore =
     B001,B008,B305,
     E128,E226,E265,E501,E402,E266,E722,E731,
     F401,
-    N802,
+    N802,N818,
     P101,P102,P103,
     D102,D103,D106,D107,D104,D105,D209,D211,D401,D402,D403,D412,D413,
     A003,
-    W503, W504
-    FI15
-min-version = 3.6.1
+    W503, W504,
+    FI18,
+    PT004,
+    PT011,
+    PT012
+min-version = 3.7.0
 max-complexity = 12
 per-file-ignores =
     qutebrowser/api/hook.py : N801
@@ -61,3 +68,6 @@ per-file-ignores =
 copyright-check = True
 copyright-regexp = # Copyright [\d-]+ .*
 copyright-min-file-size = 110
+pytest-fixture-no-parentheses = True
+pytest-mark-no-parentheses = True
+pytest-parametrize-names-type = csv

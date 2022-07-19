@@ -38,7 +38,7 @@ from qutebrowser.utils import (message, log, usertypes, qtutils, objreg, utils,
 from qutebrowser.mainwindow import messageview, prompt
 from qutebrowser.completion import completionwidget, completer
 from qutebrowser.keyinput import modeman
-from qutebrowser.browser import commands, downloadview, hints, downloads
+from qutebrowser.browser import downloadview, hints, downloads
 from qutebrowser.misc import crashsignal, keyhintwidget, sessions, objects
 from qutebrowser.qt import sip
 
@@ -92,7 +92,7 @@ def raise_window(window, alert=True):
     window.setWindowState(window.windowState() | Qt.WindowActive)
     window.raise_()
     # WORKAROUND for https://bugreports.qt.io/browse/QTBUG-69568
-    QCoreApplication.processEvents(  # type: ignore[call-overload]
+    QCoreApplication.processEvents(
         QEventLoop.ExcludeUserInputEvents | QEventLoop.ExcludeSocketNotifiers)
 
     if not sip.isdeleted(window):
@@ -249,8 +249,8 @@ class MainWindow(QWidget):
         log.init.debug("Initializing modes...")
         modeman.init(win_id=self.win_id, parent=self)
 
-        self._commandrunner = runners.CommandRunner(self.win_id,
-                                                    partial_match=True)
+        self._commandrunner = runners.CommandRunner(
+            self.win_id, partial_match=True, find_similar=True)
 
         self._keyhint = keyhintwidget.KeyHintView(self.win_id, self)
         self._add_overlay(self._keyhint, self._keyhint.update_geometry)
@@ -381,6 +381,8 @@ class MainWindow(QWidget):
         self._add_overlay(self._completion, self._completion.update_geometry)
 
     def _init_command_dispatcher(self):
+        # Lazy import to avoid circular imports
+        from qutebrowser.browser import commands
         self._command_dispatcher = commands.CommandDispatcher(
             self.win_id, self.tabbed_browser)
         objreg.register('command-dispatcher',
@@ -535,6 +537,9 @@ class MainWindow(QWidget):
         self.tabbed_browser.cur_load_status_changed.connect(
             self.status.url.on_load_status_changed)
 
+        self.tabbed_browser.cur_search_match_changed.connect(
+            self.status.search_match.set_match)
+
         self.tabbed_browser.cur_caret_selection_toggled.connect(
             self.status.on_caret_selection_toggled)
 
@@ -559,11 +564,11 @@ class MainWindow(QWidget):
 
     def _set_decoration(self, hidden):
         """Set the visibility of the window decoration via Qt."""
-        window_flags: int = Qt.Window
+        window_flags = cast(Qt.WindowFlags, Qt.Window)
         refresh_window = self.isVisible()
         if hidden:
             window_flags |= Qt.CustomizeWindowHint | Qt.NoDropShadowWindowHint
-        self.setWindowFlags(cast(Qt.WindowFlags, window_flags))
+        self.setWindowFlags(window_flags)
         if refresh_window:
             self.show()
 
@@ -572,9 +577,7 @@ class MainWindow(QWidget):
         if not config.val.content.fullscreen.window:
             if on:
                 self.state_before_fullscreen = self.windowState()
-                self.setWindowState(
-                    Qt.WindowFullScreen |  # type: ignore[arg-type]
-                    self.state_before_fullscreen)  # type: ignore[operator]
+                self.setWindowState(Qt.WindowFullScreen | self.state_before_fullscreen)
             elif self.isFullScreen():
                 self.setWindowState(self.state_before_fullscreen)
         log.misc.debug('on: {}, state before fullscreen: {}'.format(
@@ -600,7 +603,7 @@ class MainWindow(QWidget):
         super().resizeEvent(e)
         self._update_overlay_geometries()
         self._downloadview.updateGeometry()
-        self.tabbed_browser.widget.tabBar().refresh()
+        self.tabbed_browser.widget.tab_bar().refresh()
 
     def showEvent(self, e):
         """Extend showEvent to register us as the last-visible-main-window.
@@ -618,13 +621,15 @@ class MainWindow(QWidget):
             True if closing is okay, False if a closeEvent should be ignored.
         """
         tab_count = self.tabbed_browser.widget.count()
+        window_count = len(objreg.window_registry)
         download_count = self._download_model.running_downloads()
         quit_texts = []
         # Ask if multiple-tabs are open
         if 'multiple-tabs' in config.val.confirm_quit and tab_count > 1:
             quit_texts.append("{} tabs are open.".format(tab_count))
-        # Ask if multiple downloads running
-        if 'downloads' in config.val.confirm_quit and download_count > 0:
+        # Ask if downloads running
+        if ('downloads' in config.val.confirm_quit and download_count > 0 and
+                window_count <= 1):
             quit_texts.append("{} {} running.".format(
                 download_count,
                 "download is" if download_count == 1 else "downloads are"))

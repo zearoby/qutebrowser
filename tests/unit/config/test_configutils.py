@@ -300,29 +300,6 @@ def test_domain_lookup_sparse_benchmark(url, values, benchmark):
     benchmark(lambda: values.get_for_url(url))
 
 
-class TestWiden:
-
-    @pytest.mark.parametrize('hostname, expected', [
-        ('a.b.c', ['a.b.c', 'b.c', 'c']),
-        ('foobarbaz', ['foobarbaz']),
-        ('', []),
-        ('.c', ['.c', 'c']),
-        ('c.', ['c.']),
-        ('.c.', ['.c.', 'c.']),
-        (None, []),
-    ])
-    def test_widen_hostnames(self, hostname, expected):
-        assert list(configutils._widened_hostnames(hostname)) == expected
-
-    @pytest.mark.parametrize('hostname', [
-        'test.qutebrowser.org',
-        'a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.z.y.z',
-        'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq.c',
-    ])
-    def test_bench_widen_hostnames(self, hostname, benchmark):
-        benchmark(lambda: list(configutils._widened_hostnames(hostname)))
-
-
 class TestFontFamilies:
 
     @pytest.mark.parametrize('family_str, expected', [
@@ -341,13 +318,11 @@ class TestFontFamilies:
     @pytest.mark.parametrize('families, quote, expected', [
         (['family'], True, 'family'),
         (['family1', 'family2'], True, 'family1, family2'),
-        (['family'], True, 'family'),
         (['space family', 'alien'], True, '"space family", alien'),
         (['comma,family', 'period'], True, '"comma,family", period'),
 
         (['family'], False, 'family'),
         (['family1', 'family2'], False, 'family1, family2'),
-        (['family'], False, 'family'),
         (['space family', 'alien'], False, 'space family, alien'),
         (['comma,family', 'period'], False, 'comma,family, period'),
     ])
@@ -390,9 +365,13 @@ class TestFontFamilies:
         # Check the requested font to make sure CSS parsing worked
         assert label.font().family() == families.family
 
+        # Skipping the rest of the test as WORKAROUND for
+        # https://bugreports.qt.io/browse/QTBUG-94090
+        return
+
         # Try to find out whether the monospace font did a fallback on a non-monospace
         # font...
-        fallback_label = QLabel()
+        fallback_label = QLabel()  # pylint: disable=unreachable
         qtbot.add_widget(label)
         fallback_label.setText("fallback")
 

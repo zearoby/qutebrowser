@@ -157,6 +157,9 @@ def _qtwebengine_features(
         # WORKAROUND for https://bugreports.qt.io/browse/QTBUG-89740
         disabled_features.append('InstalledApp')
 
+    if not config.val.input.media_keys:
+        disabled_features.append('HardwareMediaKeyHandling')
+
     return (enabled_features, disabled_features)
 
 
@@ -189,6 +192,17 @@ def _get_pak_name(locale_name: str) -> str:
     return locale_name.split('-')[0]
 
 
+def _webengine_locales_path() -> pathlib.Path:
+    """Get the path of the QtWebEngine locales."""
+    if version.is_flatpak():
+        # TranslationsPath is /usr/translations on Flatpak, i.e. the path for qtbase,
+        # not QtWebEngine.
+        base = pathlib.Path('/app/translations')
+    else:
+        base = pathlib.Path(QLibraryInfo.location(QLibraryInfo.TranslationsPath))
+    return base / 'qtwebengine_locales'
+
+
 def _get_lang_override(
         webengine_version: utils.VersionNumber,
         locale_name: str
@@ -204,8 +218,7 @@ def _get_lang_override(
     if webengine_version != utils.VersionNumber(5, 15, 3) or not utils.is_linux:
         return None
 
-    locales_path = pathlib.Path(
-        QLibraryInfo.location(QLibraryInfo.TranslationsPath)) / 'qtwebengine_locales'
+    locales_path = _webengine_locales_path()
     if not locales_path.exists():
         log.init.debug(f"{locales_path} not found, skipping workaround!")
         return None
@@ -247,9 +260,8 @@ def _qtwebengine_args(
             # Only actually available in Qt 5.12.5, but let's save another
             # check, as passing the option won't hurt.
             yield '--enable-in-process-stack-traces'
-    else:
-        if 'stack' not in namespace.debug_flags:
-            yield '--disable-in-process-stack-traces'
+    elif 'stack' not in namespace.debug_flags:
+        yield '--disable-in-process-stack-traces'
 
     lang_override = _get_lang_override(
         webengine_version=versions.webengine,
@@ -309,18 +321,27 @@ def _qtwebengine_settings_args(versions: version.WebEngineVersions) -> Iterator[
                 '--force-webrtc-ip-handling-policy='
                 'disable_non_proxied_udp',
         },
-        'qt.process_model': {
+        'qt.chromium.process_model': {
             'process-per-site-instance': None,
             'process-per-site': '--process-per-site',
             'single-process': '--single-process',
         },
-        'qt.low_end_device_mode': {
+        'qt.chromium.low_end_device_mode': {
             'auto': None,
             'always': '--enable-low-end-device-mode',
             'never': '--disable-low-end-device-mode',
         },
         'content.headers.referer': {
             'always': None,
+        },
+        'content.prefers_reduced_motion': {
+            True: '--force-prefers-reduced-motion',
+            False: None,
+        },
+        'qt.chromium.sandboxing': {
+            'enable-all': None,
+            'disable-seccomp-bpf': '--disable-seccomp-filter-sandbox',
+            'disable-all': '--no-sandbox',
         }
     }
     qt_514_ver = utils.VersionNumber(5, 14)

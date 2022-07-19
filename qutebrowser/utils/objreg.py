@@ -55,7 +55,8 @@ class CommandOnlyError(Exception):
 _IndexType = Union[str, int]
 
 
-class ObjectRegistry(collections.UserDict):
+# UserDict is only generic in Python 3.9+
+class ObjectRegistry(collections.UserDict):  # type: ignore[type-arg]
 
     """A registry of long-living objects in qutebrowser.
 
@@ -169,7 +170,7 @@ def _get_tab_registry(win_id: _WindowTab,
         window: Optional[QWidget] = QApplication.activeWindow()
         if window is None or not hasattr(window, 'win_id'):
             raise RegistryUnavailableError('tab')
-        win_id = window.win_id
+        win_id = window.win_id  # type: ignore[attr-defined]
     elif win_id is None:
         raise TypeError("window is None with scope tab!")
 
@@ -204,7 +205,7 @@ def _get_window_registry(window: _WindowTab) -> ObjectRegistry:
         raise RegistryUnavailableError('window')
 
     try:
-        return win.registry
+        return win.registry  # type: ignore[attr-defined]
     except AttributeError:
         raise RegistryUnavailableError('window')
 

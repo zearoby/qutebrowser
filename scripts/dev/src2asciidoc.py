@@ -176,13 +176,15 @@ def _get_setting_quickref():
 
 def _get_configtypes():
     """Get configtypes classes to document."""
-    predicate = lambda e: (
-        inspect.isclass(e) and
-        # pylint: disable=protected-access
-        e not in [configtypes.BaseType, configtypes.MappingType,
-                  configtypes._Numeric, configtypes.FontBase] and
-        # pylint: enable=protected-access
-        issubclass(e, configtypes.BaseType))
+    def predicate(e):
+        return (
+            inspect.isclass(e) and
+            # pylint: disable=protected-access
+            e not in [configtypes.BaseType, configtypes.MappingType,
+                      configtypes._Numeric, configtypes.FontBase] and
+            # pylint: enable=protected-access
+            issubclass(e, configtypes.BaseType)
+        )
     yield from inspect.getmembers(configtypes, predicate)
 
 
@@ -375,7 +377,7 @@ def generate_commands(filename):
         other_cmds = []
         debug_cmds = []
         for name, cmd in objects.commands.items():
-            if cmd.deprecated:
+            if cmd.deprecated or name == 'Ni!':
                 continue
             if usertypes.KeyMode.normal not in cmd.modes:
                 other_cmds.append((name, cmd))
@@ -444,9 +446,10 @@ def _generate_setting_option(f, opt):
     if opt.restart:
         f.write("\nThis setting requires a restart.\n")
     if opt.supports_pattern:
-        f.write("\nThis setting supports URL patterns.\n")
+        f.write("\nThis setting supports link:configuring{outfilesuffix}#patterns[URL patterns].\n")
     if opt.no_autoconfig:
         f.write("\nThis setting can only be set in config.py.\n")
+    _generate_setting_backend_info(f, opt)
     f.write("\n")
     typ = opt.typ.get_name().replace(',', '&#44;')
     f.write('Type: <<types,{typ}>>\n'.format(typ=typ))
@@ -465,7 +468,6 @@ def _generate_setting_option(f, opt):
         f.write("\n")
 
     f.write("Default: {}\n".format(opt.typ.to_doc(opt.default)))
-    _generate_setting_backend_info(f, opt)
 
 
 def generate_settings(filename):
@@ -536,7 +538,9 @@ def regenerate_manpage(filename):
     # pylint: disable=protected-access
     for group in parser._action_groups:
         groupdata = []
-        groupdata.append('=== {}'.format(group.title))
+        # https://bugs.python.org/issue9694 backport
+        title = "options" if group.title == "optional arguments" else group.title
+        groupdata.append('=== {}'.format(title))
         if group.description is not None:
             groupdata.append(group.description)
         for action in group._group_actions:

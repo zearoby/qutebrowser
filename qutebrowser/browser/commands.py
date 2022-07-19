@@ -25,7 +25,7 @@ import functools
 from typing import cast, Callable, Dict, Union
 
 from PyQt5.QtWidgets import QApplication, QTabBar
-from PyQt5.QtCore import pyqtSlot, Qt, QUrl, QEvent, QUrlQuery
+from PyQt5.QtCore import Qt, QUrl, QEvent, QUrlQuery
 
 from qutebrowser.commands import userscripts, runners
 from qutebrowser.api import cmdutils
@@ -383,17 +383,18 @@ class CommandDispatcher:
                 yield parsed
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
-    def tab_clone(self, bg=False, window=False):
+    def tab_clone(self, bg=False, window=False, private=False):
         """Duplicate the current tab.
 
         Args:
             bg: Open in a background tab.
             window: Open in a new window.
+            private: Open in a new private window.
 
         Return:
             The new QWebView.
         """
-        cmdutils.check_exclusive((bg, window), 'bw')
+        cmdutils.check_exclusive((bg, window, private), 'bwp')
         curtab = self._current_widget()
         cur_title = self._tabbed_browser.widget.page_title(
             self._current_index())
@@ -404,9 +405,9 @@ class CommandDispatcher:
 
         # The new tab could be in a new tabbed_browser (e.g. because of
         # tabs.tabs_are_windows being set)
-        if window:
+        if window or private:
             new_tabbed_browser = self._new_tabbed_browser(
-                private=self._tabbed_browser.is_private)
+                private=self._tabbed_browser.is_private or private)
         else:
             new_tabbed_browser = self._tabbed_browser
         newtab = new_tabbed_browser.tabopen(background=bg)
@@ -450,7 +451,7 @@ class CommandDispatcher:
 
         self._open(tab.url(), tab=True)
         if not keep:
-            tabbed_browser.close_tab(tab, add_undo=False)
+            tabbed_browser.close_tab(tab, add_undo=False, transfer=True)
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
     @cmdutils.argument('win_id', completion=miscmodels.window)
@@ -499,7 +500,8 @@ class CommandDispatcher:
         tabbed_browser.tabopen(self._current_url())
         if not keep:
             self._tabbed_browser.close_tab(self._current_widget(),
-                                           add_undo=False)
+                                           add_undo=False,
+                                           transfer=True)
 
     def _back_forward(self, tab, bg, window, count, forward, index=None):
         """Helper function for :back/:forward."""
@@ -602,7 +604,7 @@ class CommandDispatcher:
         widget = self._current_widget()
         url = self._current_url()
 
-        handlers: Dict[str, Callable] = {
+        handlers: Dict[str, Callable[..., QUrl]] = {
             'prev': functools.partial(navigate.prevnext, prev=True),
             'next': functools.partial(navigate.prevnext, prev=False),
             'up': navigate.path_up,
@@ -756,12 +758,17 @@ class CommandDispatcher:
                               maybe=True)
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
-    def tab_only(self, prev=False, next_=False, force=False):
+    @cmdutils.argument('pinned', choices=['prompt', 'close', 'keep'], flag='P',
+                       metavar='behavior')
+    @cmdutils.argument('force', hide=True)
+    def tab_only(self, *, prev=False, next_=False, pinned='prompt', force=False):
         """Close all tabs except for the current one.
 
         Args:
             prev: Keep tabs before the current.
             next_: Keep tabs after the current.
+            pinned: What to do with pinned tabs.
+                    Valid values: prompt, close, keep.
             force: Avoid confirmation for pinned tabs.
         """
         cmdutils.check_exclusive((prev, next_), 'pn')
@@ -775,24 +782,28 @@ class CommandDispatcher:
                         (prev and i < cur_idx) or
                         (next_ and i > cur_idx))
 
+        if force:
+            message.warning("--force is deprecated, use --pinned close instead.")
+            pinned = 'close'
+
         # close as many tabs as we can
         first_tab = True
         pinned_tabs_cleanup = False
         for i, tab in enumerate(self._tabbed_browser.widgets()):
             if _to_close(i):
-                if force or not tab.data.pinned:
+                if pinned == 'close' or not tab.data.pinned:
                     self._tabbed_browser.close_tab(tab, new_undo=first_tab)
                     first_tab = False
                 else:
                     pinned_tabs_cleanup = tab
 
         # Check to see if we would like to close any pinned tabs
-        if pinned_tabs_cleanup:
+        if pinned_tabs_cleanup and pinned == 'prompt':
             self._tabbed_browser.tab_close_prompt_if_pinned(
                 pinned_tabs_cleanup,
-                force,
+                pinned == 'close',
                 lambda: self.tab_only(
-                    prev=prev, next_=next_, force=True),
+                    prev=prev, next_=next_, pinned='close'),
                 text="Are you sure you want to close pinned tabs?")
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
@@ -902,6 +913,7 @@ class CommandDispatcher:
                 # Not sure how you enter a command without an active window...
                 raise cmdutils.CommandError(
                     "No window specified and couldn't find active window!")
+            assert isinstance(active_win, mainwindow.MainWindow), active_win
             win_id = active_win.win_id
 
         if win_id not in objreg.window_registry:
@@ -917,7 +929,7 @@ class CommandDispatcher:
         return (tabbed_browser, tabbed_browser.widget.widget(idx-1))
 
     @cmdutils.register(instance='command-dispatcher', scope='window',
-                       maxsplit=0, deprecated_name='buffer')
+                       maxsplit=0)
     @cmdutils.argument('index', completion=miscmodels.tabs)
     @cmdutils.argument('count', value=cmdutils.Value.count)
     def tab_select(self, index=None, count=None):
@@ -943,8 +955,7 @@ class CommandDispatcher:
         tabbed_browser, tab = self._resolve_tab_index(index)
 
         window = tabbed_browser.widget.window()
-        window.activateWindow()
-        window.raise_()
+        mainwindow.raise_window(window)
         tabbed_browser.widget.setCurrentWidget(tab)
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
@@ -974,6 +985,9 @@ class CommandDispatcher:
             self._tab_focus_stack(index)
             return
         elif index is None:
+            message.warning(
+                "Using :tab-focus without count is deprecated, "
+                "use :tab-next instead.")
             self.tab_next()
             return
 
@@ -992,11 +1006,10 @@ class CommandDispatcher:
             raise cmdutils.CommandError("There's no tab with index {}!".format(
                 index))
 
-    @cmdutils.register(instance='command-dispatcher', scope='window')
-    @cmdutils.argument('index', choices=['+', '-'])
-    @cmdutils.argument('count', value=cmdutils.Value.count)
-    def tab_move(self, index: Union[str, int] = None,
-                 count: int = None) -> None:
+    @cmdutils.register(instance="command-dispatcher", scope="window")
+    @cmdutils.argument("index", choices=["+", "-", "start", "end"])
+    @cmdutils.argument("count", value=cmdutils.Value.count)
+    def tab_move(self, index: Union[str, int] = None, count: int = None) -> None:
         """Move the current tab according to the argument and [count].
 
         If neither is given, move it to the first position.
@@ -1005,24 +1018,30 @@ class CommandDispatcher:
             index: `+` or `-` to move relative to the current tab by
                    count, or a default of 1 space.
                    A tab index to move to that index.
+                   `start` and `end` to move to the start and the end.
             count: If moving relatively: Offset.
                    If moving absolutely: New position (default: 0). This
                    overrides the index argument, if given.
         """
-        if index in ['+', '-']:
+        if index in ["+", "-"]:
             # relative moving
             new_idx = self._current_index()
             delta = 1 if count is None else count
-            if index == '-':
+            if index == "-":
                 new_idx -= delta
-            elif index == '+':  # pragma: no branch
+            elif index == "+":  # pragma: no branch
                 new_idx += delta
 
             if config.val.tabs.wrap:
                 new_idx %= self._count()
         else:
+            # pylint: disable=else-if-used
             # absolute moving
-            if count is not None:
+            if index == "start":
+                new_idx = 0
+            elif index == "end":
+                new_idx = self._count() - 1
+            elif count is not None:
                 new_idx = count - 1
             elif index is not None:
                 assert isinstance(index, int)
@@ -1077,12 +1096,11 @@ class CommandDispatcher:
         log.procs.debug("Executing {} with args {}, userscript={}".format(
             cmd, args, userscript))
 
-        @pyqtSlot()
-        def _on_proc_finished():
+        def _on_proc_finished(proc):
             if output:
                 tb = objreg.get('tabbed-browser', scope='window',
                                 window='last-focused')
-                tb.load_url(QUrl('qute://spawn-output'), newtab=True)
+                tb.load_url(QUrl(f'qute://process/{proc.pid}'), newtab=True)
 
         if userscript:
             def _selection_callback(s):
@@ -1112,7 +1130,7 @@ class CommandDispatcher:
                                  "detailed error")
             else:
                 proc.start(cmd, args)
-            proc.finished.connect(_on_proc_finished)
+            proc.finished.connect(functools.partial(_on_proc_finished, proc))
 
     def _run_userscript(self, selection, cmd, args, verbose, output_messages,
                         count):
@@ -1135,6 +1153,7 @@ class CommandDispatcher:
 
         idx = self._current_index()
         if idx != -1:
+            env['QUTE_TAB_INDEX'] = str(idx + 1)
             env['QUTE_TITLE'] = self._tabbed_browser.widget.page_title(idx)
 
         # FIXME:qtwebengine: If tab is None, run_async will fail!
@@ -1488,8 +1507,7 @@ class CommandDispatcher:
             objreg.last_focused_window(), alert=False))
         ed.edit(text, caret_position)
 
-    @cmdutils.register(instance='command-dispatcher', scope='window',
-                       deprecated_name='open-editor')
+    @cmdutils.register(instance='command-dispatcher', scope='window')
     def edit_text(self):
         """Open an external editor with the currently selected form field.
 
@@ -1505,6 +1523,7 @@ class CommandDispatcher:
         Callback for GUIProcess when the edited text was updated.
 
         Args:
+            ed: The editor.ExternalEditor instance
             elem: The WebElementWrapper which was modified.
             text: The new text to insert.
         """
@@ -1519,32 +1538,38 @@ class CommandDispatcher:
             message.error(str(e))
             ed.backup()
 
-    def _search_cb(self, found, *, tab, old_scroll_pos, options, text, prev):
-        """Callback called from search/search_next/search_prev.
+    def _search_cb(self, found, *, text):
+        """Callback called from :search.
 
         Args:
             found: Whether the text was found.
-            tab: The AbstractTab in which the search was made.
-            old_scroll_pos: The scroll position (QPoint) before the search.
-            options: The options (dict) the search was made with.
-            text: The text searched for.
-            prev: Whether we're searching backwards (i.e. :search-prev)
         """
-        # :search/:search-next without reverse -> down
-        # :search/:search-next    with reverse -> up
-        # :search-prev         without reverse -> up
-        # :search-prev            with reverse -> down
-        going_up = options['reverse'] ^ prev
+        if not found:
+            message.warning(f"Text '{text}' not found on page!",
+                            replace='find-in-page')
 
-        if found:
-            # Check if the scroll position got smaller and show info.
-            if not going_up and tab.scroller.pos_px().y() < old_scroll_pos.y():
-                message.info("Search hit BOTTOM, continuing at TOP")
-            elif going_up and tab.scroller.pos_px().y() > old_scroll_pos.y():
-                message.info("Search hit TOP, continuing at BOTTOM")
-        else:
-            message.warning("Text '{}' not found on page!".format(text),
-                            replace=True)
+    def _search_navigation_cb(self, result):
+        """Callback called from :search-prev/next."""
+        if result == browsertab.SearchNavigationResult.not_found:
+            # FIXME check if this actually can happen...
+            message.warning("Search result vanished...")
+            return
+        elif result == browsertab.SearchNavigationResult.found:
+            return
+        elif not config.val.search.wrap_messages:
+            return
+
+        messages = {
+            browsertab.SearchNavigationResult.wrap_prevented_bottom:
+                "Search hit BOTTOM",
+            browsertab.SearchNavigationResult.wrap_prevented_top:
+                "Search hit TOP",
+            browsertab.SearchNavigationResult.wrapped_bottom:
+                "Search hit BOTTOM, continuing at TOP",
+            browsertab.SearchNavigationResult.wrapped_top:
+                "Search hit TOP, continuing at BOTTOM",
+        }
+        message.info(messages[result], replace="search-hit-msg")
 
     @cmdutils.register(instance='command-dispatcher', scope='window',
                        maxsplit=0)
@@ -1565,19 +1590,39 @@ class CommandDispatcher:
         options = {
             'ignore_case': config.val.search.ignore_case,
             'reverse': reverse,
-            'wrap': config.val.search.wrap,
         }
 
         self._tabbed_browser.search_text = text
-        self._tabbed_browser.search_options = dict(options)
-
-        cb = functools.partial(self._search_cb, tab=tab,
-                               old_scroll_pos=tab.scroller.pos_px(),
-                               options=options, text=text, prev=False)
-        options['result_cb'] = cb
+        self._tabbed_browser.search_options = options
 
         tab.scroller.before_jump_requested.emit()
-        tab.search.search(text, **options)
+
+        cb = functools.partial(self._search_cb, text=text)
+        tab.search.search(text, **options, result_cb=cb)
+
+    def _search_prev_next(self, count, tab, method):
+        """Continue the search to the prev/next term."""
+        window_text = self._tabbed_browser.search_text
+        window_options = self._tabbed_browser.search_options
+
+        if window_text is None:
+            raise cmdutils.CommandError("No search done yet.")
+
+        tab.scroller.before_jump_requested.emit()
+
+        if window_text is not None and window_text != tab.search.text:
+            tab.search.clear()
+            tab.search.search(window_text, **window_options)
+            count -= 1
+
+        if count == 0:
+            return
+
+        wrap = config.val.search.wrap
+
+        for _ in range(count - 1):
+            method(wrap=wrap)
+        method(callback=self._search_navigation_cb, wrap=wrap)
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
     @cmdutils.argument('count', value=cmdutils.Value.count)
@@ -1588,30 +1633,7 @@ class CommandDispatcher:
             count: How many elements to ignore.
         """
         tab = self._current_widget()
-        window_text = self._tabbed_browser.search_text
-        window_options = self._tabbed_browser.search_options
-
-        if window_text is None:
-            raise cmdutils.CommandError("No search done yet.")
-
-        tab.scroller.before_jump_requested.emit()
-
-        if window_text is not None and window_text != tab.search.text:
-            tab.search.clear()
-            tab.search.search(window_text, **window_options)
-            count -= 1
-
-        if count == 0:
-            return
-
-        cb = functools.partial(self._search_cb, tab=tab,
-                               old_scroll_pos=tab.scroller.pos_px(),
-                               options=window_options, text=window_text,
-                               prev=False)
-
-        for _ in range(count - 1):
-            tab.search.next_result()
-        tab.search.next_result(result_cb=cb)
+        self._search_prev_next(count, tab, tab.search.next_result)
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
     @cmdutils.argument('count', value=cmdutils.Value.count)
@@ -1622,30 +1644,7 @@ class CommandDispatcher:
             count: How many elements to ignore.
         """
         tab = self._current_widget()
-        window_text = self._tabbed_browser.search_text
-        window_options = self._tabbed_browser.search_options
-
-        if window_text is None:
-            raise cmdutils.CommandError("No search done yet.")
-
-        tab.scroller.before_jump_requested.emit()
-
-        if window_text is not None and window_text != tab.search.text:
-            tab.search.clear()
-            tab.search.search(window_text, **window_options)
-            count -= 1
-
-        if count == 0:
-            return
-
-        cb = functools.partial(self._search_cb, tab=tab,
-                               old_scroll_pos=tab.scroller.pos_px(),
-                               options=window_options, text=window_text,
-                               prev=True)
-
-        for _ in range(count - 1):
-            tab.search.prev_result()
-        tab.search.prev_result(result_cb=cb)
+        self._search_prev_next(count, tab, tab.search.prev_result)
 
     def _jseval_cb(self, out):
         """Show the data returned from JS."""

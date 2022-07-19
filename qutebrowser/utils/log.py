@@ -33,7 +33,7 @@ import json
 import inspect
 import argparse
 from typing import (TYPE_CHECKING, Any, Iterator, Mapping, MutableSequence,
-                    Optional, Set, Tuple, Union, cast)
+                    Optional, Set, Tuple, Union)
 
 from PyQt5 import QtCore
 # Optional imports
@@ -44,6 +44,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from qutebrowser.config import config as configmodule
+    from typing import TextIO
 
 _log_inited = False
 _args = None
@@ -245,7 +246,9 @@ def disable_qt_msghandler() -> Iterator[None]:
 @contextlib.contextmanager
 def py_warning_filter(action: str = 'ignore', **kwargs: Any) -> Iterator[None]:
     """Contextmanager to temporarily disable certain Python warnings."""
-    warnings.filterwarnings(action, **kwargs)
+    # FIXME Use Literal['default', 'error', 'ignore', 'always', 'module', 'once']
+    # once we use Python 3.8 or typing_extensions
+    warnings.filterwarnings(action, **kwargs)  # type: ignore[arg-type]
     yield
     if _log_inited:
         _init_py_warnings()
@@ -257,7 +260,7 @@ def _init_handlers(
         force_color: bool,
         json_logging: bool,
         ram_capacity: int
-) -> Tuple[logging.StreamHandler, Optional['RAMHandler']]:
+) -> Tuple["logging.StreamHandler[TextIO]", Optional['RAMHandler']]:
     """Init log handlers.
 
     Args:
@@ -363,12 +366,16 @@ def change_console_formatter(level: int) -> None:
         level: The numeric logging level
     """
     assert console_handler is not None
+    old_formatter = console_handler.formatter
 
-    old_formatter = cast(ColoredFormatter, console_handler.formatter)
-    console_fmt = get_console_format(level)
-    console_formatter = ColoredFormatter(console_fmt, DATEFMT, '{',
-                                         use_colors=old_formatter.use_colors)
-    console_handler.setFormatter(console_formatter)
+    if isinstance(old_formatter, ColoredFormatter):
+        console_fmt = get_console_format(level)
+        console_formatter = ColoredFormatter(
+            console_fmt, DATEFMT, '{', use_colors=old_formatter.use_colors)
+        console_handler.setFormatter(console_formatter)
+    else:
+        # Same format for all levels
+        assert isinstance(old_formatter, JSONFormatter), old_formatter
 
 
 def qt_message_handler(msg_type: QtCore.QtMsgType,
@@ -377,8 +384,8 @@ def qt_message_handler(msg_type: QtCore.QtMsgType,
     """Qt message handler to redirect qWarning etc. to the logging system.
 
     Args:
-        QtMsgType msg_type: The level of the message.
-        QMessageLogContext context: The source code location of the message.
+        msg_type: The level of the message.
+        context: The source code location of the message.
         msg: The message text.
     """
     # Mapping from Qt logging levels to the matching logging module levels.
@@ -723,7 +730,8 @@ class ColoredFormatter(logging.Formatter):
                  datefmt: str,
                  style: str, *,
                  use_colors: bool) -> None:
-        super().__init__(fmt, datefmt, style)
+        # FIXME Use Literal["%", "{", "$"] once we use Python 3.8 or typing_extensions
+        super().__init__(fmt, datefmt, style)  # type: ignore[arg-type]
         self.use_colors = use_colors
 
     def format(self, record: logging.LogRecord) -> str:

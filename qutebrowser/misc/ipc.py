@@ -191,8 +191,7 @@ class IPCServer(QObject):
             self._atime_timer.setTimerType(Qt.VeryCoarseTimer)
 
         self._server = QLocalServer(self)
-        self._server.newConnection.connect(  # type: ignore[attr-defined]
-            self.handle_connection)
+        self._server.newConnection.connect(self.handle_connection)
 
         self._socket = None
         self._old_socket = None
@@ -270,18 +269,16 @@ class IPCServer(QObject):
         log.ipc.debug("Client connected (socket 0x{:x}).".format(id(socket)))
         self._socket = socket
         self._timer.start()
-        socket.readyRead.connect(  # type: ignore[attr-defined]
-            self.on_ready_read)
+        socket.readyRead.connect(self.on_ready_read)
         if socket.canReadLine():
             log.ipc.debug("We can read a line immediately.")
             self.on_ready_read()
-        socket.error.connect(self.on_error)  # type: ignore[attr-defined]
-        if socket.error() not in [QLocalSocket.UnknownSocketError,
-                                  QLocalSocket.PeerClosedError]:
+        socket.error.connect(self.on_error)
+        if socket.error() not in [  # type: ignore[operator]
+                QLocalSocket.UnknownSocketError, QLocalSocket.PeerClosedError]:
             log.ipc.debug("We got an error immediately.")
-            self.on_error(socket.error())
-        socket.disconnected.connect(  # type: ignore[attr-defined]
-            self.on_disconnected)
+            self.on_error(socket.error())  # type: ignore[operator]
+        socket.disconnected.connect(self.on_disconnected)
         if socket.state() == QLocalSocket.UnconnectedState:
             log.ipc.debug("Socket was disconnected immediately.")
             self.on_disconnected()
@@ -356,32 +353,43 @@ class IPCServer(QObject):
 
         self.got_args.emit(args, target_arg, cwd)
 
-    @pyqtSlot()
-    def on_ready_read(self):
-        """Read json data from the client."""
+    def _get_socket(self, warn=True):
+        """Get the current socket for on_ready_read.
+
+        Arguments:
+            warn: Whether to warn if no socket was found.
+        """
         if self._socket is None:  # pragma: no cover
             # This happens when doing a connection while another one is already
             # active for some reason.
             if self._old_socket is None:
-                log.ipc.warning("In on_ready_read with None socket and "
-                                "old_socket!")
-                return
-            log.ipc.debug("In on_ready_read with None socket!")
+                if warn:
+                    log.ipc.warning("In _get_socket with None socket and old_socket!")
+                return None
+            log.ipc.debug("In _get_socket with None socket!")
             socket = self._old_socket
         else:
             socket = self._socket
 
         if sip.isdeleted(socket):  # pragma: no cover
             log.ipc.warning("Ignoring deleted IPC socket")
-            return
+            return None
 
+        return socket
+
+    @pyqtSlot()
+    def on_ready_read(self):
+        """Read json data from the client."""
         self._timer.stop()
+
+        socket = self._get_socket()
         while socket is not None and socket.canReadLine():
             data = bytes(socket.readLine())
             self.got_raw.emit(data)
             log.ipc.debug("Read from socket 0x{:x}: {!r}".format(
                 id(socket), data))
             self._handle_data(data)
+            socket = self._get_socket(warn=False)
 
         if self._socket is not None:
             self._timer.start()

@@ -63,8 +63,9 @@ def test_result(qapp, caplog):
     assert versions is not None
 
     # No failing mmap
-    assert len(caplog.messages) == 1
-    assert caplog.messages[0].startswith('Got versions from ELF:')
+    assert len(caplog.messages) == 2
+    assert caplog.messages[0].startswith('QtWebEngine .so found at')
+    assert caplog.messages[1].startswith('Got versions from ELF:')
 
     from qutebrowser.browser.webengine import webenginesettings
     webenginesettings.init_user_agent()
@@ -72,6 +73,23 @@ def test_result(qapp, caplog):
 
     assert ua.qt_version == versions.webengine
     assert ua.upstream_browser_version == versions.chromium
+
+
+@pytest.mark.parametrize("data, expected", [
+    # Simple match
+    (
+        b"\x00QtWebEngine/5.15.9 Chrome/87.0.4280.144\x00",
+        elf.Versions("5.15.9", "87.0.4280.144"),
+    ),
+    # Ignoring garbage string-like data
+    (
+        b"\x00QtWebEngine/5.15.9 Chrome/87.0.4xternalclearkey\x00\x00"
+        b"QtWebEngine/5.15.9 Chrome/87.0.4280.144\x00",
+        elf.Versions("5.15.9", "87.0.4280.144"),
+    ),
+])
+def test_find_versions(data, expected):
+    assert elf._find_versions(data) == expected
 
 
 @hypothesis.given(data=hst.builds(

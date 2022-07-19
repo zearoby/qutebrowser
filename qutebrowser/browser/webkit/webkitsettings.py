@@ -57,8 +57,9 @@ class WebKitSettings(websettings.AbstractSettings):
             Attr(QWebSettings.JavascriptCanOpenWindows),
         'content.javascript.can_close_tabs':
             Attr(QWebSettings.JavascriptCanCloseWindows),
-        'content.javascript.can_access_clipboard':
-            Attr(QWebSettings.JavascriptCanAccessClipboard),
+        'content.javascript.clipboard':
+            Attr(QWebSettings.JavascriptCanAccessClipboard,
+                 converter=lambda val: val != "none"),
         'content.plugins':
             Attr(QWebSettings.PluginsEnabled),
         'content.webgl':
@@ -82,7 +83,7 @@ class WebKitSettings(websettings.AbstractSettings):
             Attr(QWebSettings.PrintElementBackgrounds),
         'content.xss_auditing':
             Attr(QWebSettings.XSSAuditingEnabled),
-        'content.site_specific_quirks':
+        'content.site_specific_quirks.enabled':
             Attr(QWebSettings.SiteSpecificQuirksEnabled),
 
         'input.spatial_navigation':

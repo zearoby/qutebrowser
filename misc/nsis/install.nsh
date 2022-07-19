@@ -351,13 +351,12 @@ Section "Register with Windows" SectionWindowsRegister
     !insertmacro UpdateRegDWORD SHCTX "SOFTWARE\Classes\$2" "EditFlags" 0x00000002
     !insertmacro UpdateRegStr SHCTX "SOFTWARE\Classes\$2\DefaultIcon" "" "$1,0"
     !insertmacro UpdateRegStr SHCTX "SOFTWARE\Classes\$2\shell" "" "open"
-    !insertmacro UpdateRegStr SHCTX "SOFTWARE\Classes\$2\shell\open\command" "" "$\"$1$\" $\"%1$\""
+    !insertmacro UpdateRegStr SHCTX "SOFTWARE\Classes\$2\shell\open\command" "" "$\"$1$\" --untrusted-args $\"%1$\""
     !insertmacro UpdateRegStr SHCTX "SOFTWARE\Classes\$2\shell\open\ddeexec" "" ""
     StrCmp $2 "${PRODUCT_NAME}HTML" 0 +4
     StrCpy $2 "${PRODUCT_NAME}URL"
     StrCpy $3 "${PRODUCT_NAME} URL"
     Goto WriteRegHandler
-    !insertmacro UpdateRegStr SHCTX "SOFTWARE\Classes\$2" "URL Protocol" ""
   ${endif}
 SectionEnd
 
@@ -543,8 +542,16 @@ Function PageInstallModeChangeMode
 FunctionEnd
 
 Function PageComponentsPre
-  GetDlgItem $0 $HWNDPARENT 1
-  SendMessage $0 ${BCM_SETSHIELD} 0 0 ; hide SHIELD (Windows Vista and above)
+  SendMessage $mui.Button.Next ${BCM_SETSHIELD} 0 0
+  StrCmpS $HasCurrentModeInstallation 0 +9
+  IfFileExists "$DESKTOP\${PRODUCT_NAME}.lnk" +4
+  SectionGetFlags ${SectionDesktopIcon} $1
+  IntOp $1 $1 & 0xFFFFFFFE
+  SectionSetFlags ${SectionDesktopIcon} $1
+  IfFileExists "$STARTMENU\${PRODUCT_NAME}.lnk" +4
+  SectionGetFlags ${SectionStartMenuIcon} $1
+  IntOp $1 $1 & 0xFFFFFFFE
+  SectionSetFlags ${SectionStartMenuIcon} $1
 FunctionEnd
 
 Function PageDirectoryPre

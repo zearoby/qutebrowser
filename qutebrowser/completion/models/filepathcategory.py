@@ -65,7 +65,7 @@ class FilePathCategory(QAbstractListModel):
         try:
             return glob.glob(glob.escape(val) + '*')
         except ValueError as e:  # pragma: no cover
-            # e.g. "embedded null byte" with \x00 on Python 3.6 and 3.7
+            # e.g. "embedded null byte" with \x00 on Python 3.7
             log.completion.debug(f"Failed to glob: {e}")
             return []
 
@@ -91,7 +91,13 @@ class FilePathCategory(QAbstractListModel):
                 for path in self._glob(url_path)
             )
         else:
-            paths = self._glob(os.path.expanduser(val))
+            try:
+                expanded = os.path.expanduser(val)
+            except ValueError:
+                # os.path.expanduser('~\ud800') can raise UnicodeEncodeError
+                # via pwd.getpwnam. '~\x00' can raise ValueError.
+                expanded = val
+            paths = self._glob(expanded)
             self._paths = sorted(self._contract_user(val, path) for path in paths)
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Optional[str]:

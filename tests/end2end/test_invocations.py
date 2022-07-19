@@ -26,6 +26,7 @@ import logging
 import importlib
 import re
 import json
+import platform
 
 import pytest
 from PyQt5.QtCore import QProcess, QPoint
@@ -39,6 +40,14 @@ ascii_locale = pytest.mark.skipif(sys.hexversion >= 0x03070000,
                                   "locale with LC_ALL=C")
 
 
+# For some reason (some floating point rounding differences?), color values are
+# slightly different (and wrong!) on ARM machines. We adjust our expected values
+# accordingly, since we don't really care about the exact value, we just want to
+# know that the underlying Chromium is respecting our preferences.
+# FIXME what to do about 32-bit ARM?
+IS_ARM = platform.machine() == 'aarch64'
+
+
 def _base_args(config):
     """Get the arguments to pass with every invocation."""
     args = ['--debug', '--json-logging', '--no-err-windows']
@@ -47,27 +56,32 @@ def _base_args(config):
     else:
         args += ['--backend', 'webkit']
 
-    if config.webengine:
-        args += testutils.seccomp_args(qt_flag=True)
+    if config.webengine and testutils.disable_seccomp_bpf_sandbox():
+        args += testutils.DISABLE_SECCOMP_BPF_ARGS
 
     args.append('about:blank')
     return args
 
 
 @pytest.fixture
-def temp_basedir_env(tmpdir, short_tmpdir):
+def runtime_tmpdir(short_tmpdir):
+    """A directory suitable for XDG_RUNTIME_DIR."""
+    runtime_dir = short_tmpdir / 'rt'
+    runtime_dir.ensure(dir=True)
+    runtime_dir.chmod(0o700)
+    return runtime_dir
+
+
+@pytest.fixture
+def temp_basedir_env(tmp_path, runtime_tmpdir):
     """Return a dict of environment variables that fakes --temp-basedir.
 
     We can't run --basedir or --temp-basedir for some tests, so we mess with
     XDG_*_DIR to get things relocated.
     """
-    data_dir = tmpdir / 'data'
-    config_dir = tmpdir / 'config'
-    runtime_dir = short_tmpdir / 'rt'
-    cache_dir = tmpdir / 'cache'
-
-    runtime_dir.ensure(dir=True)
-    runtime_dir.chmod(0o700)
+    data_dir = tmp_path / 'data'
+    config_dir = tmp_path / 'config'
+    cache_dir = tmp_path / 'cache'
 
     lines = [
         '[general]',
@@ -77,12 +91,13 @@ def temp_basedir_env(tmpdir, short_tmpdir):
     ]
 
     state_file = data_dir / 'qutebrowser' / 'state'
-    state_file.write_text('\n'.join(lines), encoding='utf-8', ensure=True)
+    state_file.parent.mkdir(parents=True)
+    state_file.write_text('\n'.join(lines), encoding='utf-8')
 
     env = {
         'XDG_DATA_HOME': str(data_dir),
         'XDG_CONFIG_HOME': str(config_dir),
-        'XDG_RUNTIME_DIR': str(runtime_dir),
+        'XDG_RUNTIME_DIR': str(runtime_tmpdir),
         'XDG_CACHE_HOME': str(cache_dir),
     }
     return env
@@ -90,7 +105,7 @@ def temp_basedir_env(tmpdir, short_tmpdir):
 
 @pytest.mark.linux
 @ascii_locale
-def test_downloads_with_ascii_locale(request, server, tmpdir, quteproc_new):
+def test_downloads_with_ascii_locale(request, server, tmp_path, quteproc_new):
     """Test downloads with LC_ALL=C set.
 
     https://github.com/qutebrowser/qutebrowser/issues/908
@@ -98,7 +113,7 @@ def test_downloads_with_ascii_locale(request, server, tmpdir, quteproc_new):
     """
     args = ['--temp-basedir'] + _base_args(request.config)
     quteproc_new.start(args, env={'LC_ALL': 'C'})
-    quteproc_new.set_setting('downloads.location.directory', str(tmpdir))
+    quteproc_new.set_setting('downloads.location.directory', str(tmp_path))
 
     # Test a normal download
     quteproc_new.set_setting('downloads.location.prompt', 'false')
@@ -118,14 +133,14 @@ def test_downloads_with_ascii_locale(request, server, tmpdir, quteproc_new):
     quteproc_new.wait_for(category='misc',
                           message='Opening * with [*python*]')
 
-    assert len(tmpdir.listdir()) == 1
-    assert (tmpdir / '?-issue908.bin').exists()
+    assert len(list(tmp_path.iterdir())) == 1
+    assert (tmp_path / '?-issue908.bin').exists()
 
 
 @pytest.mark.linux
 @pytest.mark.parametrize('url', ['/föö.html', 'file:///föö.html'])
 @ascii_locale
-def test_open_with_ascii_locale(request, server, tmpdir, quteproc_new, url):
+def test_open_with_ascii_locale(request, server, tmp_path, quteproc_new, url):
     """Test opening non-ascii URL with LC_ALL=C set.
 
     https://github.com/qutebrowser/qutebrowser/issues/1450
@@ -153,7 +168,7 @@ def test_open_with_ascii_locale(request, server, tmpdir, quteproc_new, url):
 
 @pytest.mark.linux
 @ascii_locale
-def test_open_command_line_with_ascii_locale(request, server, tmpdir,
+def test_open_command_line_with_ascii_locale(request, server, tmp_path,
                                              quteproc_new):
     """Test opening file via command line with a non-ascii name with LC_ALL=C.
 
@@ -180,19 +195,22 @@ def test_open_command_line_with_ascii_locale(request, server, tmpdir,
 
 @pytest.mark.linux
 def test_misconfigured_user_dirs(request, server, temp_basedir_env,
-                                 tmpdir, quteproc_new):
+                                 tmp_path, quteproc_new):
     """Test downloads with a misconfigured XDG_DOWNLOAD_DIR.
 
     https://github.com/qutebrowser/qutebrowser/issues/866
     https://github.com/qutebrowser/qutebrowser/issues/1269
     """
-    home = tmpdir / 'home'
-    home.ensure(dir=True)
+    home = tmp_path / 'home'
+    home.mkdir()
     temp_basedir_env['HOME'] = str(home)
+    config_userdir_dir = (tmp_path / 'config')
+    config_userdir_dir.mkdir(parents=True)
+    config_userdir_file = (tmp_path / 'config' / 'user-dirs.dirs')
+    config_userdir_file.touch()
 
-    assert temp_basedir_env['XDG_CONFIG_HOME'] == tmpdir / 'config'
-    (tmpdir / 'config' / 'user-dirs.dirs').write('XDG_DOWNLOAD_DIR="relative"',
-                                                 ensure=True)
+    assert temp_basedir_env['XDG_CONFIG_HOME'] == str(tmp_path / 'config')
+    config_userdir_file.write_text('XDG_DOWNLOAD_DIR="relative"')
 
     quteproc_new.start(_base_args(request.config), env=temp_basedir_env)
 
@@ -263,10 +281,10 @@ def test_version(request):
     assert match is not None
 
 
-def test_qt_arg(request, quteproc_new, tmpdir):
+def test_qt_arg(request, quteproc_new, tmp_path):
     """Test --qt-arg."""
     args = (['--temp-basedir', '--qt-arg', 'stylesheet',
-             str(tmpdir / 'does-not-exist')] + _base_args(request.config))
+             str(tmp_path / 'does-not-exist')] + _base_args(request.config))
     quteproc_new.start(args)
 
     msg = 'QCss::Parser - Failed to load file  "*does-not-exist"'
@@ -278,17 +296,17 @@ def test_qt_arg(request, quteproc_new, tmpdir):
 
 
 @pytest.mark.linux
-def test_webengine_download_suffix(request, quteproc_new, tmpdir):
+def test_webengine_download_suffix(request, quteproc_new, tmp_path):
     """Make sure QtWebEngine does not add a suffix to downloads."""
     if not request.config.webengine:
         pytest.skip()
 
-    download_dir = tmpdir / 'downloads'
-    download_dir.ensure(dir=True)
+    download_dir = tmp_path / 'downloads'
+    download_dir.mkdir()
 
-    (tmpdir / 'user-dirs.dirs').write(
+    (tmp_path / 'user-dirs.dirs').write_text(
         'XDG_DOWNLOAD_DIR={}'.format(download_dir))
-    env = {'XDG_CONFIG_HOME': str(tmpdir)}
+    env = {'XDG_CONFIG_HOME': str(tmp_path)}
     args = (['--temp-basedir'] + _base_args(request.config))
     quteproc_new.start(args, env=env)
 
@@ -301,9 +319,9 @@ def test_webengine_download_suffix(request, quteproc_new, tmpdir):
     quteproc_new.send_cmd(':prompt-accept yes')
     quteproc_new.wait_for(category='downloads', message='Download * finished')
 
-    files = download_dir.listdir()
+    files = list(download_dir.iterdir())
     assert len(files) == 1
-    assert files[0].basename == 'download.bin'
+    assert files[0].name == 'download.bin'
 
 
 def test_command_on_start(request, quteproc_new):
@@ -318,7 +336,7 @@ def test_command_on_start(request, quteproc_new):
     quteproc_new.wait_for_quit()
 
 
-@pytest.mark.parametrize('python', ['python2', 'python3.5'])
+@pytest.mark.parametrize('python', ['python2', 'python3.6'])
 def test_launching_with_old_python(python):
     try:
         proc = subprocess.run(
@@ -328,7 +346,7 @@ def test_launching_with_old_python(python):
     except FileNotFoundError:
         pytest.skip(f"{python} not found")
     assert proc.returncode == 1
-    error = "At least Python 3.6.1 is required to run qutebrowser"
+    error = "At least Python 3.7 is required to run qutebrowser"
     assert proc.stderr.decode('ascii').startswith(error)
 
 
@@ -350,10 +368,10 @@ def test_initial_private_browsing(request, quteproc_new):
     quteproc_new.wait_for_quit()
 
 
-def test_loading_empty_session(tmpdir, request, quteproc_new):
+def test_loading_empty_session(tmp_path, request, quteproc_new):
     """Make sure loading an empty session opens a window."""
-    session = tmpdir / 'session.yml'
-    session.write('windows: []')
+    session = tmp_path / 'session.yml'
+    session.write_text('windows: []')
 
     args = _base_args(request.config) + ['--temp-basedir', '-r', str(session)]
     quteproc_new.start(args)
@@ -501,24 +519,28 @@ def test_preferred_colorscheme_with_dark_mode(
     quteproc_new.open_path('data/darkmode/prefers-color-scheme.html')
     content = quteproc_new.get_content()
 
-    if webengine_versions.webengine == utils.VersionNumber(5, 15, 3):
+    qtwe_version = webengine_versions.webengine
+    xfail = None
+    if utils.VersionNumber(5, 15, 3) <= qtwe_version <= utils.VersionNumber(6):
         # https://bugs.chromium.org/p/chromium/issues/detail?id=1177973
         # No workaround known.
         expected_text = 'Light preference detected.'
         # light website color, inverted by darkmode
-        expected_color = testutils.Color(127, 127, 127)
-        xfail = True
-    elif webengine_versions.webengine == utils.VersionNumber(5, 15, 2):
+        expected_color = (testutils.Color(123, 125, 123) if IS_ARM
+                          else testutils.Color(127, 127, 127))
+        xfail = "Chromium bug 1177973"
+    elif qtwe_version == utils.VersionNumber(5, 15, 2):
         # Our workaround breaks when dark mode is enabled...
         # Also, for some reason, dark mode doesn't work on that page either!
         expected_text = 'No preference detected.'
         expected_color = testutils.Color(0, 170, 0)  # green
-        xfail = True
+        xfail = "QTBUG-89753"
     else:
         # Qt 5.14 and 5.15.0/.1 work correctly.
         # Hopefully, so does Qt 6.x in the future?
         expected_text = 'Dark preference detected.'
-        expected_color = testutils.Color(34, 34, 34)  # dark website color
+        expected_color = (testutils.Color(33, 32, 33) if IS_ARM
+                          else testutils.Color(34, 34, 34))  # dark website color
         xfail = False
 
     pos = QPoint(0, 0)
@@ -529,7 +551,7 @@ def test_preferred_colorscheme_with_dark_mode(
     assert color == expected_color
     if xfail:
         # We still do some checks, but we want to mark the test outcome as xfail.
-        pytest.xfail("QTBUG-89753")
+        pytest.xfail(xfail)
 
 
 @pytest.mark.qtwebkit_skip
@@ -619,30 +641,51 @@ def test_cookies_store(quteproc_new, request, short_tmpdir, store):
     quteproc_new.wait_for_quit()
 
 
+# The 'colors' dictionaries in the parametrize decorator below have (QtWebEngine
+# version, CPU architecture) as keys. Either of those (or both) can be None to
+# say "on all other Qt versions" or "on all other CPU architectures".
 @pytest.mark.parametrize('filename, algorithm, colors', [
     (
         'blank',
         'lightness-cielab',
         {
-            '5.15': testutils.Color(18, 18, 18),
-            '5.14': testutils.Color(27, 27, 27),
-            None: testutils.Color(0, 0, 0),
+            ('5.15', None): testutils.Color(18, 18, 18),
+            ('5.15', 'aarch64'): testutils.Color(16, 16, 16),
+            ('5.14', None): testutils.Color(27, 27, 27),
+            ('5.14', 'aarch64'): testutils.Color(24, 24, 24),
+            (None, None): testutils.Color(0, 0, 0),
         }
     ),
-    ('blank', 'lightness-hsl', {None: testutils.Color(0, 0, 0)}),
-    ('blank', 'brightness-rgb', {None: testutils.Color(0, 0, 0)}),
+    ('blank', 'lightness-hsl', {(None, None): testutils.Color(0, 0, 0)}),
+    ('blank', 'brightness-rgb', {(None, None): testutils.Color(0, 0, 0)}),
 
     (
         'yellow',
         'lightness-cielab',
         {
-            '5.15': testutils.Color(35, 34, 0),
-            '5.14': testutils.Color(35, 34, 0),
-            None: testutils.Color(204, 204, 0),
+            ('5.15', None): testutils.Color(35, 34, 0),
+            ('5.15', 'aarch64'): testutils.Color(33, 32, 0),
+            ('5.14', None): testutils.Color(35, 34, 0),
+            ('5.14', 'aarch64'): testutils.Color(33, 32, 0),
+            (None, None): testutils.Color(204, 204, 0),
         }
     ),
-    ('yellow', 'lightness-hsl', {None: testutils.Color(204, 204, 0)}),
-    ('yellow', 'brightness-rgb', {None: testutils.Color(0, 0, 204)}),
+    (
+        'yellow',
+        'lightness-hsl',
+        {
+            (None, None): testutils.Color(204, 204, 0),
+            (None, 'aarch64'): testutils.Color(206, 207, 0),
+        },
+    ),
+    (
+        'yellow',
+        'brightness-rgb',
+        {
+            (None, None): testutils.Color(0, 0, 204),
+            (None, 'aarch64'): testutils.Color(0, 0, 206),
+        }
+    ),
 ])
 def test_dark_mode(webengine_versions, quteproc_new, request,
                    filename, algorithm, colors):
@@ -657,19 +700,81 @@ def test_dark_mode(webengine_versions, quteproc_new, request,
     quteproc_new.start(args)
 
     ver = webengine_versions.webengine
-    minor_version = f'{ver.majorVersion()}.{ver.minorVersion()}'
-    expected = colors.get(minor_version, colors[None])
+    minor_version = str(ver.strip_patch())
+
+    arch = platform.machine()
+    for key in [
+        (minor_version, arch),
+        (minor_version, None),
+        (None, arch),
+        (None, None),
+    ]:
+        if key in colors:
+            expected = colors[key]
+            break
 
     quteproc_new.open_path(f'data/darkmode/{filename}.html')
 
     # Position chosen by fair dice roll.
     # https://xkcd.com/221/
-    pos = QPoint(4, 4)
-    img = quteproc_new.get_screenshot(probe_pos=pos, probe_color=expected)
+    quteproc_new.get_screenshot(
+        probe_pos=QPoint(4, 4),
+        probe_color=expected,
+    )
 
-    color = testutils.Color(img.pixelColor(pos))
-    # For pytest debug output
-    assert color == expected
+
+@pytest.mark.parametrize("suffix", ["inline", "display"])
+def test_dark_mode_mathml(quteproc_new, request, qtbot, suffix):
+    if not request.config.webengine:
+        pytest.skip("Skipped with QtWebKit")
+
+    args = _base_args(request.config) + [
+        '--temp-basedir',
+        '-s', 'colors.webpage.darkmode.enabled', 'true',
+        '-s', 'colors.webpage.darkmode.algorithm', 'brightness-rgb',
+    ]
+    quteproc_new.start(args)
+
+    quteproc_new.open_path(f'data/darkmode/mathml-{suffix}.html')
+    quteproc_new.wait_for_js('Image loaded')
+
+    # First make sure loading finished by looking outside of the image
+    expected = testutils.Color(0, 0, 206) if IS_ARM else testutils.Color(0, 0, 204)
+
+    quteproc_new.get_screenshot(
+        probe_pos=QPoint(105, 0),
+        probe_color=expected,
+    )
+
+    # Then get the actual formula color, probing again in case it's not displayed yet...
+    quteproc_new.get_screenshot(
+        probe_pos=QPoint(4, 4),
+        probe_color=testutils.Color(255, 255, 255),
+    )
+
+
+@testutils.qt514
+@pytest.mark.parametrize('value, preference', [
+    ('true', 'Reduced motion'),
+    ('false', 'No'),
+])
+@pytest.mark.skipif(
+    utils.is_windows,
+    reason="Outcome on Windows depends on system settings",
+)
+def test_prefers_reduced_motion(quteproc_new, request, value, preference):
+    if not request.config.webengine:
+        pytest.skip("Skipped with QtWebKit")
+
+    args = _base_args(request.config) + [
+        '--temp-basedir',
+        '-s', 'content.prefers_reduced_motion', value,
+    ]
+    quteproc_new.start(args)
+
+    quteproc_new.open_path('data/prefers_reduced_motion.html')
+    content = quteproc_new.get_content()
+    assert content == f"{preference} preference detected."
 
 
 def test_unavailable_backend(request, quteproc_new):
@@ -712,3 +817,91 @@ def test_unavailable_backend(request, quteproc_new):
         message=('*qutebrowser tried to start with the Qt* backend but failed '
                  'because * could not be imported.*'))
     line.expected = True
+
+
+def test_json_logging_without_debug(request, quteproc_new, runtime_tmpdir):
+    args = _base_args(request.config) + ['--temp-basedir', ':quit']
+    args.remove('--debug')
+    args.remove('about:blank')  # interfers with :quit at the end
+
+    quteproc_new.exit_expected = True
+    quteproc_new.start(args, env={'XDG_RUNTIME_DIR': str(runtime_tmpdir)})
+    assert not quteproc_new.is_running()
+
+
+@pytest.mark.qtwebkit_skip
+@pytest.mark.parametrize(
+    'sandboxing, has_namespaces, has_seccomp, has_yama, expected_result', [
+        ('enable-all', True, True, True, "You are adequately sandboxed."),
+        ('disable-seccomp-bpf', True, False, True, "You are NOT adequately sandboxed."),
+        ('disable-all', False, False, False, "You are NOT adequately sandboxed."),
+    ]
+)
+def test_sandboxing(
+        request, quteproc_new, sandboxing,
+        has_namespaces, has_seccomp, has_yama, expected_result,
+):
+    if not request.config.webengine:
+        pytest.skip("Skipped with QtWebKit")
+    elif sandboxing == "enable-all" and testutils.disable_seccomp_bpf_sandbox():
+        pytest.skip("Full sandboxing not supported")
+
+    args = _base_args(request.config) + [
+        '--temp-basedir',
+        '-s', 'qt.chromium.sandboxing', sandboxing,
+    ]
+    quteproc_new.start(args)
+
+    quteproc_new.open_url('chrome://sandbox')
+    text = quteproc_new.get_content()
+    print(text)
+
+    not_found_msg = ("The webpage at chrome://sandbox/ might be temporarily down or "
+                     "it may have moved permanently to a new web address.")
+    if not_found_msg in text.split("\n"):
+        line = quteproc_new.wait_for(message='Load error: ERR_INVALID_URL')
+        line.expected = True
+        pytest.skip("chrome://sandbox/ not supported")
+
+    bpf_text = "Seccomp-BPF sandbox"
+    yama_text = "Ptrace Protection with Yama LSM"
+
+    if "\n\n\n" in text:
+        # Qt 5.12
+        header, rest = text.split("\n", maxsplit=1)
+        rest, result = rest.rsplit("\n\n", maxsplit=1)
+        lines = rest.replace("\t\n", "\t").split("\n\n\n")
+
+        expected_status = {
+            "Namespace Sandbox": "Yes" if has_namespaces else "No",
+            "Network namespaces": "Yes" if has_namespaces else "No",
+            "PID namespaces": "Yes" if has_namespaces else "No",
+            "SUID Sandbox": "No",
+
+            bpf_text: "Yes" if has_seccomp else "No",
+            f"{bpf_text} supports TSYNC": "Yes" if has_seccomp else "No",
+
+            "Yama LSM Enforcing": "Yes" if has_yama else "No",
+        }
+    else:
+        header, *lines, empty, result = text.split("\n")
+        assert not empty
+
+        expected_status = {
+            "Layer 1 Sandbox": "Namespace" if has_namespaces else "None",
+
+            "PID namespaces": "Yes" if has_namespaces else "No",
+            "Network namespaces": "Yes" if has_namespaces else "No",
+
+            bpf_text: "Yes" if has_seccomp else "No",
+            f"{bpf_text} supports TSYNC": "Yes" if has_seccomp else "No",
+
+            f"{yama_text} (Broker)": "Yes" if has_yama else "No",
+            f"{yama_text} (Non-broker)": "No",
+        }
+
+    assert header == "Sandbox Status"
+    assert result == expected_result
+
+    status = dict(line.split("\t") for line in lines)
+    assert status == expected_status

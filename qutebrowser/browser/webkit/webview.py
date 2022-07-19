@@ -109,7 +109,9 @@ class WebView(QWebView):
         settings = self.settings()
         settings.setAttribute(QWebSettings.JavascriptEnabled, False)
         self.stop()
-        self.page().shutdown()
+        page = self.page()
+        assert isinstance(page, webpage.BrowserPage), page
+        page.shutdown()
 
     def createWindow(self, wintype):
         """Called by Qt when a page wants to create a new window.
@@ -152,9 +154,6 @@ class WebView(QWebView):
 
         Args:
             e: The QPaintEvent.
-
-        Return:
-            The superclass event return value.
         """
         frame = self.page().mainFrame()
         new_pos = (frame.scrollBarValue(Qt.Horizontal),
@@ -186,9 +185,6 @@ class WebView(QWebView):
 
         Args:
             e: The QShowEvent.
-
-        Return:
-            The superclass event return value.
         """
         super().showEvent(e)
         self.page().setVisibilityState(QWebPage.VisibilityStateVisible)
@@ -198,9 +194,6 @@ class WebView(QWebView):
 
         Args:
             e: The QHideEvent.
-
-        Return:
-            The superclass event return value.
         """
         super().hideEvent(e)
         self.page().setVisibilityState(QWebPage.VisibilityStateHidden)
