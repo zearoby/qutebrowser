@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-# vim: ft=python fileencoding=utf-8 sts=4 sw=4 et:
+
+# SPDX-FileCopyrightText: Florian Bruhin (The Compiler) <mail@qutebrowser.org>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Fetch and print the most common user agents.
 
@@ -25,6 +28,7 @@ def wrap(ini, sub, string):
     return textwrap.wrap(string, width=80, initial_indent=ini, subsequent_indent=sub)
 
 
+# pylint: disable-next=missing-timeout
 response = requests.get('https://raw.githubusercontent.com/Kikobeats/top-user-agents/master/index.json')
 
 if response.status_code != 200:

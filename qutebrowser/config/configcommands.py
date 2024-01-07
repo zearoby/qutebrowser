@@ -1,21 +1,6 @@
-# vim: ft=python fileencoding=utf-8 sts=4 sw=4 et:
-
-# Copyright 2014-2021 Florian Bruhin (The Compiler) <mail@qutebrowser.org>
+# SPDX-FileCopyrightText: Florian Bruhin (The Compiler) <mail@qutebrowser.org>
 #
-# This file is part of qutebrowser.
-#
-# qutebrowser is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# qutebrowser is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with qutebrowser.  If not, see <https://www.gnu.org/licenses/>.
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Commands related to the configuration."""
 
@@ -23,7 +8,7 @@ import os.path
 import contextlib
 from typing import TYPE_CHECKING, Iterator, List, Optional, Any, Tuple
 
-from PyQt5.QtCore import QUrl
+from qutebrowser.qt.core import QUrl, QUrlQuery
 
 from qutebrowser.api import cmdutils
 from qutebrowser.completion.models import configmodel
@@ -281,9 +266,18 @@ class ConfigCommands:
 
     @cmdutils.register(instance='config-commands')
     @cmdutils.argument('win_id', value=cmdutils.Value.win_id)
-    def config_diff(self, win_id: int) -> None:
-        """Show all customized options."""
+    def config_diff(self, win_id: int, include_hidden: bool = False) -> None:
+        """Show all customized options.
+
+        Args:
+            include_hidden: Also include internal qutebrowser settings.
+        """
         url = QUrl('qute://configdiff')
+        if include_hidden:
+            query = QUrlQuery()
+            query.addQueryItem("include_hidden", "true")
+            url.setQuery(query)
+
         tabbed_browser = objreg.get('tabbed-browser',
                                     scope='window', window=win_id)
         tabbed_browser.load_url(url, newtab=False)
@@ -308,7 +302,7 @@ class ConfigCommands:
 
         with self._handle_config_error():
             option_value = self._config.get_mutable_obj(option)
-            option_value.append(value)
+            option_value.append(opt.typ.valtype.from_str(value))
             self._config.update_mutables(save_yaml=not temp)
 
     @cmdutils.register(instance='config-commands')
@@ -327,6 +321,7 @@ class ConfigCommands:
         """
         with self._handle_config_error():
             opt = self._config.get_opt(option)
+
         if not isinstance(opt.typ, configtypes.Dict):
             raise cmdutils.CommandError(":config-dict-add can only be used "
                                         "for dicts")
@@ -339,7 +334,7 @@ class ConfigCommands:
                                             "--replace to overwrite!"
                                             .format(key, option))
 
-            option_value[key] = value
+            option_value[key] = opt.typ.valtype.from_str(value)
             self._config.update_mutables(save_yaml=not temp)
 
     @cmdutils.register(instance='config-commands')
@@ -360,15 +355,15 @@ class ConfigCommands:
             raise cmdutils.CommandError(":config-list-remove can only be used "
                                         "for lists")
 
+        converted = opt.typ.valtype.from_str(value)
+
         with self._handle_config_error():
             option_value = self._config.get_mutable_obj(option)
 
-            if value not in option_value:
-                raise cmdutils.CommandError("{} is not in {}!".format(
-                    value, option))
+            if converted not in option_value:
+                raise cmdutils.CommandError(f"{value} is not in {option}!")
 
-            option_value.remove(value)
-
+            option_value.remove(converted)
             self._config.update_mutables(save_yaml=not temp)
 
     @cmdutils.register(instance='config-commands')

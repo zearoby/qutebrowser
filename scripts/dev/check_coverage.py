@@ -1,22 +1,9 @@
 #!/usr/bin/env python3
-# vim: ft=python fileencoding=utf-8 sts=4 sw=4 et:
 
-# Copyright 2015-2021 Florian Bruhin (The Compiler) <mail@qutebrowser.org>
+# SPDX-FileCopyrightText: Florian Bruhin (The Compiler) <mail@qutebrowser.org>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
 
-# This file is part of qutebrowser.
-#
-# qutebrowser is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# qutebrowser is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with qutebrowser.  If not, see <https://www.gnu.org/licenses/>.
 
 """Enforce perfect coverage on some files."""
 
@@ -136,6 +123,8 @@ PERFECT_FILES = [
      'qutebrowser/misc/objects.py'),
     ('tests/unit/misc/test_throttle.py',
      'qutebrowser/misc/throttle.py'),
+    ('tests/unit/misc/test_pakjoy.py',
+     'qutebrowser/misc/pakjoy.py'),
 
     (None,
      'qutebrowser/mainwindow/statusbar/keystring.py'),
@@ -341,10 +330,6 @@ def main_check():
         print("or check https://codecov.io/github/qutebrowser/qutebrowser")
         print()
 
-    if scriptutils.ON_CI:
-        print("Keeping coverage.xml on CI.")
-    else:
-        os.remove('coverage.xml')
     return 1 if messages else 0
 
 
@@ -365,7 +350,6 @@ def main_check_all():
              '--cov-report', 'xml', test_file], check=True)
         with open('coverage.xml', encoding='utf-8') as f:
             messages = check(f, [(test_file, src_file)])
-        os.remove('coverage.xml')
 
         messages = [msg for msg in messages
                     if msg.typ == MsgType.insufficient_coverage]
