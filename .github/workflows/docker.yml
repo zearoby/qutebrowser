@@ -8,12 +8,11 @@ on:
 jobs:
   docker:
     if: "github.repository == 'qutebrowser/qutebrowser'"
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         image:
-          - archlinux-webkit
           - archlinux-webengine
           - archlinux-webengine-unstable
           - archlinux-webengine-unstable-qt6
@@ -32,7 +31,7 @@ jobs:
         with:
           username: qutebrowser
           password: ${{ secrets.DOCKER_TOKEN }}
-      - uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v6
         with:
           file: scripts/dev/ci/docker/Dockerfile
           context: .
@@ -42,7 +41,7 @@ jobs:
   irc:
     timeout-minutes: 2
     continue-on-error: true
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     needs: [docker]
     if: "always() && github.repository == 'qutebrowser/qutebrowser'"
     steps:

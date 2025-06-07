@@ -15,8 +15,10 @@ import textwrap
 import datetime
 import dataclasses
 import importlib.metadata
+import unittest.mock
 
 import pytest
+import pytest_mock
 import hypothesis
 import hypothesis.strategies
 from qutebrowser.qt import machinery
@@ -620,39 +622,43 @@ def test_path_info(monkeypatch, equal):
         assert pathinfo['system data'] == 'SYSTEM DATA PATH'
 
 
-@pytest.fixture
-def import_fake(stubs, monkeypatch):
-    """Fixture to patch imports using ImportFake."""
-    fake = stubs.ImportFake({mod: True for mod in version.MODULE_INFO}, monkeypatch)
-    fake.patch()
-    return fake
-
-
 class TestModuleVersions:
 
     """Tests for _module_versions() and ModuleInfo."""
 
+    @pytest.fixture
+    def import_fake(self, stubs, monkeypatch):
+        """Fixture to patch imports using ImportFake."""
+        fake = stubs.ImportFake(dict.fromkeys(version.MODULE_INFO, True), monkeypatch)
+        fake.patch()
+        return fake
+
+    @pytest.fixture(autouse=True)
+    def importlib_metadata_mock(
+        self, mocker: pytest_mock.MockerFixture
+    ) -> unittest.mock.Mock:
+        return mocker.patch("importlib.metadata.version", return_value="4.5.6")
+
     def test_all_present(self, import_fake):
-        """Test with all modules present in version 1.2.3."""
+        """Test with all modules present in a fixed version."""
         expected = []
         for name in import_fake.modules:
             version.MODULE_INFO[name]._reset_cache()
             if '__version__' not in version.MODULE_INFO[name]._version_attributes:
-                expected.append('{}: yes'.format(name))
+                expected.append(f"{name}: 4.5.6")  # from importlib.metadata
             else:
-                expected.append('{}: 1.2.3'.format(name))
+                expected.append(f"{name}: 1.2.3")
         assert version._module_versions() == expected
 
-    @pytest.mark.parametrize('module, idx, expected', [
-        ('colorama', 0, 'colorama: no'),
-        ('adblock', 4, 'adblock: no'),
+    @pytest.mark.parametrize('module, expected', [
+        ('colorama', 'colorama: no'),
+        ('adblock', 'adblock: no'),
     ])
-    def test_missing_module(self, module, idx, expected, import_fake):
+    def test_missing_module(self, module, expected, import_fake):
         """Test with a module missing.
 
         Args:
             module: The name of the missing module.
-            idx: The index where the given text is expected.
             expected: The expected text.
         """
         import_fake.modules[module] = False
@@ -660,6 +666,7 @@ class TestModuleVersions:
         mod_info = version.MODULE_INFO[module]
         mod_info._reset_cache()
 
+        idx = list(version.MODULE_INFO).index(module)
         assert version._module_versions()[idx] == expected
 
         for method_name, expected_result in [
@@ -693,7 +700,16 @@ class TestModuleVersions:
         assert not mod_info.is_usable()
 
         expected = f"adblock: {fake_version} (< {mod_info.min_version}, outdated)"
-        assert version._module_versions()[4] == expected
+        idx = list(version.MODULE_INFO).index("adblock")
+        assert version._module_versions()[idx] == expected
+
+    def test_importlib_not_found(self, importlib_metadata_mock: unittest.mock.Mock):
+        """Test with no __version__ attribute and missing importlib.metadata."""
+        assert not version.MODULE_INFO["jinja2"]._version_attributes  # sanity check
+        importlib_metadata_mock.side_effect = importlib.metadata.PackageNotFoundError
+        version.MODULE_INFO["jinja2"]._reset_cache()
+        idx = list(version.MODULE_INFO).index("jinja2")
+        assert version._module_versions()[idx] == "jinja2: unknown"
 
     @pytest.mark.parametrize('attribute, expected_modules', [
         ('VERSION', ['colorama']),
@@ -722,22 +738,21 @@ class TestModuleVersions:
             mod_info = version.MODULE_INFO[name]
             if name in expected_modules:
                 assert mod_info.get_version() == "1.2.3"
-                expected.append('{}: 1.2.3'.format(name))
+                expected.append(f"{name}: 1.2.3")
             else:
-                assert mod_info.get_version() is None
-                expected.append('{}: yes'.format(name))
+                assert mod_info.get_version() == "4.5.6"  # from importlib.metadata
+                expected.append(f"{name}: 4.5.6")
 
         assert version._module_versions() == expected
 
     @pytest.mark.parametrize('name, has_version', [
         ('sip', False),
         ('colorama', True),
-        ('jinja2', True),
+        # jinja2: removed in 3.3
         ('pygments', True),
         ('yaml', True),
         ('adblock', True),
         ('dataclasses', False),
-        ('importlib_resources', False),
         ('objc', True),
     ])
     def test_existing_attributes(self, name, has_version):
@@ -899,21 +914,45 @@ class TestWebEngineVersions:
                 webengine=utils.VersionNumber(5, 15, 2),
                 chromium=None,
                 source='UA'),
-            "QtWebEngine 5.15.2",
+            (
+                "QtWebEngine 5.15.2\n"
+                "  (source: UA)"
+            ),
         ),
         (
             version.WebEngineVersions(
                 webengine=utils.VersionNumber(5, 15, 2),
                 chromium='87.0.4280.144',
                 source='UA'),
-            "QtWebEngine 5.15.2, based on Chromium 87.0.4280.144",
+            (
+                "QtWebEngine 5.15.2\n"
+                "  based on Chromium 87.0.4280.144\n"
+                "  (source: UA)"
+            ),
         ),
         (
             version.WebEngineVersions(
                 webengine=utils.VersionNumber(5, 15, 2),
                 chromium='87.0.4280.144',
                 source='faked'),
-            "QtWebEngine 5.15.2, based on Chromium 87.0.4280.144 (from faked)",
+            (
+                "QtWebEngine 5.15.2\n"
+                "  based on Chromium 87.0.4280.144\n"
+                "  (source: faked)"
+            ),
+        ),
+        (
+            version.WebEngineVersions(
+                webengine=utils.VersionNumber(5, 15, 2),
+                chromium='87.0.4280.144',
+                chromium_security='9000.1',
+                source='faked'),
+            (
+                "QtWebEngine 5.15.2\n"
+                "  based on Chromium 87.0.4280.144\n"
+                "  with security patches up to 9000.1 (plus any distribution patches)\n"
+                "  (source: faked)"
+            ),
         ),
     ])
     def test_str(self, version, expected):
@@ -950,6 +989,7 @@ class TestWebEngineVersions:
         expected = version.WebEngineVersions(
             webengine=utils.VersionNumber(5, 15, 2),
             chromium='83.0.4103.122',
+            chromium_security='86.0.4240.183',
             source='UA',
         )
         assert version.WebEngineVersions.from_ua(ua) == expected
@@ -959,21 +999,27 @@ class TestWebEngineVersions:
         expected = version.WebEngineVersions(
             webengine=utils.VersionNumber(5, 15, 2),
             chromium='83.0.4103.122',
+            chromium_security='86.0.4240.183',
             source='ELF',
         )
         assert version.WebEngineVersions.from_elf(elf_version) == expected
 
-    @pytest.mark.parametrize('pyqt_version, chromium_version', [
-        ('5.15.2', '83.0.4103.122'),
-        ('5.15.3', '87.0.4280.144'),
-        ('5.15.4', '87.0.4280.144'),
-        ('5.15.5', '87.0.4280.144'),
-        ('6.2.0', '90.0.4430.228'),
-        ('6.3.0', '94.0.4606.126'),
+    @pytest.mark.parametrize('pyqt_version, chromium_version, security_version', [
+        ('5.15.2', '83.0.4103.122', '86.0.4240.183'),
+        ('5.15.3', '87.0.4280.144', '88.0.4324.150'),
+        ('5.15.4', '87.0.4280.144', None),
+        ('5.15.5', '87.0.4280.144', None),
+        ('5.15.6', '87.0.4280.144', None),
+        ('5.15.7', '87.0.4280.144', '94.0.4606.61'),
+        ('6.2.0', '90.0.4430.228', '93.0.4577.63'),
+        ('6.2.99', '90.0.4430.228', None),
+        ('6.3.0', '94.0.4606.126', '99.0.4844.84'),
+        ('6.99.0', None, None),
     ])
-    def test_from_pyqt(self, freezer, pyqt_version, chromium_version):
-        if freezer and pyqt_version in ['5.15.3', '5.15.4', '5.15.5']:
+    def test_from_pyqt(self, freezer, pyqt_version, chromium_version, security_version):
+        if freezer and utils.VersionNumber(5, 15, 3) <= utils.VersionNumber.parse(pyqt_version) < utils.VersionNumber(6):
             chromium_version = '83.0.4103.122'
+            security_version = '86.0.4240.183'
             expected_pyqt_version = '5.15.2'
         else:
             expected_pyqt_version = pyqt_version
@@ -981,6 +1027,7 @@ class TestWebEngineVersions:
         expected = version.WebEngineVersions(
             webengine=utils.VersionNumber.parse(expected_pyqt_version),
             chromium=chromium_version,
+            chromium_security=security_version,
             source='PyQt',
         )
         assert version.WebEngineVersions.from_pyqt(pyqt_version) == expected
@@ -1023,6 +1070,40 @@ class TestWebEngineVersions:
         real = webenginesettings.parsed_user_agent.upstream_browser_version
 
         assert inferred == real
+
+    def test_real_chromium_security_version(self, qapp):
+        """Check the API for reading the chromium security patch version."""
+        try:
+            from qutebrowser.qt.webenginecore import (
+                qWebEngineChromiumVersion,
+                qWebEngineChromiumSecurityPatchVersion,
+            )
+        except ImportError:
+            pytest.skip("Requires QtWebEngine 6.3+")
+
+        base = utils.VersionNumber.parse(qWebEngineChromiumVersion())
+        security = utils.VersionNumber.parse(qWebEngineChromiumSecurityPatchVersion())
+        assert security >= base
+
+    def test_chromium_security_version_dict(self, qapp):
+        """Check if we infer the QtWebEngine security version properly.
+
+        Note this test mostly tests that our overview in version.py (also
+        intended for human readers) is accurate. The code we call here is never
+        going to be called in real-life situations, as the API is available.
+        """
+        try:
+            from qutebrowser.qt.webenginecore import (
+                qWebEngineVersion,
+                qWebEngineChromiumSecurityPatchVersion,
+            )
+        except ImportError:
+            pytest.skip("Requires QtWebEngine 6.3+")
+
+        print(version.qtwebengine_versions())  # useful when adding new versions
+        inferred = version.WebEngineVersions.from_webengine(
+            qWebEngineVersion(), source="API")
+        assert inferred.chromium_security == qWebEngineChromiumSecurityPatchVersion()
 
 
 class FakeQSslSocket:
@@ -1294,7 +1375,7 @@ def test_version_info(params, stubs, monkeypatch, config_stub):
     else:
         monkeypatch.delattr(version, 'qtutils.qWebKitVersion', raising=False)
         patches['objects.backend'] = usertypes.Backend.QtWebEngine
-        substitutions['backend'] = 'QtWebEngine 1.2.3 (from faked)'
+        substitutions['backend'] = 'QtWebEngine 1.2.3\n  (source: faked)'
 
     if params.known_distribution:
         patches['distribution'] = lambda: version.DistributionInfo(

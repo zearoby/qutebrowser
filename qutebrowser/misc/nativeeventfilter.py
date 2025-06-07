@@ -7,7 +7,7 @@
 This entire file is a giant WORKAROUND for https://bugreports.qt.io/browse/QTBUG-114334.
 """
 
-from typing import Tuple, Union, cast, Optional
+from typing import Union, Optional
 import enum
 import ctypes
 import ctypes.util
@@ -16,11 +16,11 @@ from qutebrowser.qt import sip, machinery
 from qutebrowser.qt.core import QAbstractNativeEventFilter, QByteArray, qVersion
 
 from qutebrowser.misc import objects
-from qutebrowser.utils import log
+from qutebrowser.utils import log, qtutils
 
 
 # Needs to be saved to avoid garbage collection
-_instance = None
+_instance: Optional["NativeEventFilter"] = None
 
 # Using C-style naming for C structures in this file
 # pylint: disable=invalid-name
@@ -104,8 +104,8 @@ class NativeEventFilter(QAbstractNativeEventFilter):
     #
     # Tuple because PyQt uses the second value as the *result out-pointer, which
     # according to the Qt documentation is only used on Windows.
-    _PASS_EVENT_RET = (False, cast(_PointerRetType, 0))
-    _FILTER_EVENT_RET = (True, cast(_PointerRetType, 0))
+    _PASS_EVENT_RET = (False, qtutils.maybe_cast(_PointerRetType, machinery.IS_QT6, 0))
+    _FILTER_EVENT_RET = (True, qtutils.maybe_cast(_PointerRetType, machinery.IS_QT6, 0))
 
     def __init__(self) -> None:
         super().__init__()
@@ -137,8 +137,10 @@ class NativeEventFilter(QAbstractNativeEventFilter):
             xcb.xcb_disconnect(conn)
 
     def nativeEventFilter(
-        self, evtype: Union[bytes, QByteArray], message: Optional[sip.voidptr]
-    ) -> Tuple[bool, _PointerRetType]:
+        self,
+        evtype: Union[QByteArray, bytes, bytearray, memoryview],
+        message: Optional[sip.voidptr],
+    ) -> tuple[bool, _PointerRetType]:
         """Handle XCB events."""
         # We're only installed when the platform plugin is xcb
         assert evtype == b"xcb_generic_event_t", evtype

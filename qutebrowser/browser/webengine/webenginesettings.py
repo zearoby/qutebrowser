@@ -12,7 +12,7 @@ Module attributes:
 import os
 import operator
 import pathlib
-from typing import cast, Any, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import cast, Any, Optional, Union, TYPE_CHECKING
 
 from qutebrowser.qt import machinery
 from qutebrowser.qt.gui import QFont
@@ -26,7 +26,7 @@ from qutebrowser.config import config, websettings
 from qutebrowser.config.websettings import AttributeInfo as Attr
 from qutebrowser.misc import pakjoy
 from qutebrowser.utils import (standarddir, qtutils, message, log,
-                               urlmatch, usertypes, objreg, version)
+                               urlmatch, usertypes, objreg, version, utils)
 if TYPE_CHECKING:
     from qutebrowser.browser.webengine import interceptor
 
@@ -37,7 +37,7 @@ private_profile: Optional[QWebEngineProfile] = None
 # The global WebEngineSettings object
 _global_settings = cast('WebEngineSettings', None)
 
-parsed_user_agent = None
+parsed_user_agent: Optional[websettings.UserAgent] = None
 
 _qute_scheme_handler = cast(webenginequtescheme.QuteSchemeHandler, None)
 _req_interceptor = cast('interceptor.RequestInterceptor', None)
@@ -148,12 +148,20 @@ class WebEngineSettings(websettings.AbstractSettings):
             Attr(QWebEngineSettings.WebAttribute.AutoLoadIconsForPage,
                  converter=lambda val: val != 'never'),
     }
-    try:
-        _ATTRIBUTES['content.canvas_reading'] = Attr(
-            QWebEngineSettings.WebAttribute.ReadingFromCanvasEnabled)  # type: ignore[attr-defined,unused-ignore]
-    except AttributeError:
-        # Added in QtWebEngine 6.6
-        pass
+
+    if machinery.IS_QT6:
+        try:
+            _ATTRIBUTES['content.canvas_reading'] = Attr(
+                QWebEngineSettings.WebAttribute.ReadingFromCanvasEnabled)
+        except AttributeError:
+            # Added in QtWebEngine 6.6
+            pass
+        try:
+            _ATTRIBUTES['colors.webpage.darkmode.enabled'] = Attr(
+                QWebEngineSettings.WebAttribute.ForceDarkMode)
+        except AttributeError:
+            # Added in QtWebEngine 6.7
+            pass
 
     _FONT_SIZES = {
         'fonts.web.size.minimum':
@@ -207,6 +215,10 @@ class WebEngineSettings(websettings.AbstractSettings):
         'access-paste': {
             QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard: True,
             QWebEngineSettings.WebAttribute.JavascriptCanPaste: True,
+        },
+        'ask': {
+            QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard: False,
+            QWebEngineSettings.WebAttribute.JavascriptCanPaste: False,
         },
     }
 
@@ -273,6 +285,7 @@ class ProfileSetter:
         self._set_hardcoded_settings()
         self.set_persistent_cookie_policy()
         self.set_dictionary_language()
+        self.disable_persistent_permissions_policy()
 
     def _set_hardcoded_settings(self):
         """Set up settings with a fixed value."""
@@ -335,7 +348,23 @@ class ProfileSetter:
 
         log.config.debug("Found dicts: {}".format(filenames))
         self._profile.setSpellCheckLanguages(filenames)
-        self._profile.setSpellCheckEnabled(bool(filenames))
+
+        should_enable = bool(filenames)
+        if self._profile.isSpellCheckEnabled() != should_enable:
+            # Only setting conditionally as a WORKAROUND for a bogus Qt error message:
+            # https://bugreports.qt.io/browse/QTBUG-131969
+            self._profile.setSpellCheckEnabled(should_enable)
+
+    def disable_persistent_permissions_policy(self):
+        """Disable webengine's permission persistence."""
+        if machinery.IS_QT6:  # for mypy
+            try:
+                # New in WebEngine 6.8.0
+                self._profile.setPersistentPermissionsPolicy(
+                    QWebEngineProfile.PersistentPermissionsPolicy.AskEveryTime
+                )
+            except AttributeError:
+                pass
 
 
 def _update_settings(option):
@@ -349,6 +378,12 @@ def _update_settings(option):
 def _init_user_agent_str(ua):
     global parsed_user_agent
     parsed_user_agent = websettings.UserAgent.parse(ua)
+    if parsed_user_agent.upstream_browser_version.endswith(".0.0.0"):
+        # https://codereview.qt-project.org/c/qt/qtwebengine/+/616314
+        # but we still want the full version available to users if they want it.
+        qtwe_versions = version.qtwebengine_versions()
+        assert qtwe_versions.chromium is not None
+        parsed_user_agent.upstream_browser_version = qtwe_versions.chromium
 
 
 def init_user_agent():
@@ -384,6 +419,25 @@ def _init_profile(profile: QWebEngineProfile) -> None:
     _global_settings.init_settings()
 
 
+def _clear_webengine_permissions_json():
+    """Remove QtWebEngine's persistent permissions file, if present.
+
+    We have our own permissions feature and don't integrate with their one.
+    This only needs to be called when you are on Qt6.8 but PyQt<6.8, since if
+    we have access to the `setPersistentPermissionsPolicy()` we will use that
+    to disable the Qt feature.
+    This needs to be called before we call `setPersistentStoragePath()`
+    because Qt will load the file during that.
+    """
+    permissions_file = pathlib.Path(standarddir.data()) / "webengine" / "permissions.json"
+    try:
+        permissions_file.unlink(missing_ok=True)
+    except OSError as err:
+        log.init.warning(
+            f"Error while cleaning up webengine permissions file: {err}"
+        )
+
+
 def _init_default_profile():
     """Init the default QWebEngineProfile."""
     global default_profile
@@ -399,13 +453,25 @@ def _init_default_profile():
 
     init_user_agent()
     ua_version = version.qtwebengine_versions()
+
+    logger = log.init.warning
+    if machinery.IS_QT5:
+        # With Qt 5.15, we can't quite be sure about which QtWebEngine patch version
+        # we're getting, as ELF parsing might be broken and there's no other way.
+        # For most of the code, we don't really care about the patch version though.
+        assert (
+            non_ua_version.webengine.strip_patch() == ua_version.webengine.strip_patch()
+        ), (non_ua_version, ua_version)
+        logger = log.init.debug
+
     if ua_version.webengine != non_ua_version.webengine:
-        log.init.warning(
+        logger(
             "QtWebEngine version mismatch - unexpected behavior might occur, "
             "please open a bug about this.\n"
             f"  Early version: {non_ua_version}\n"
             f"  Real version:  {ua_version}")
 
+    _clear_webengine_permissions_json()
     default_profile.setCachePath(
         os.path.join(standarddir.cache(), 'webengine'))
     default_profile.setPersistentStoragePath(
@@ -438,13 +504,9 @@ def _init_site_specific_quirks():
     # default_ua = ("Mozilla/5.0 ({os_info}) "
     #               "AppleWebKit/{webkit_version} (KHTML, like Gecko) "
     #               "{qt_key}/{qt_version} "
-    #               "{upstream_browser_key}/{upstream_browser_version} "
+    #               "{upstream_browser_key}/{upstream_browser_version_short} "
     #               "Safari/{webkit_version}")
-    no_qtwe_ua = ("Mozilla/5.0 ({os_info}) "
-                  "AppleWebKit/{webkit_version} (KHTML, like Gecko) "
-                  "{upstream_browser_key}/{upstream_browser_version} "
-                  "Safari/{webkit_version}")
-    firefox_ua = "Mozilla/5.0 ({os_info}; rv:90.0) Gecko/20100101 Firefox/90.0"
+    firefox_ua = "Mozilla/5.0 ({os_info}; rv:136.0) Gecko/20100101 Firefox/139.0"
 
     def maybe_newer_chrome_ua(at_least_version):
         """Return a new UA if our current chrome version isn't at least at_least_version."""
@@ -459,23 +521,13 @@ def _init_site_specific_quirks():
             "Safari/537.36"
         )
 
-    user_agents = [
-        # Needed to avoid a ""WhatsApp works with Google Chrome 36+" error
-        # page which doesn't allow to use WhatsApp Web at all. Also see the
-        # additional JS quirk: qutebrowser/javascript/quirks/whatsapp_web.user.js
-        # https://github.com/qutebrowser/qutebrowser/issues/4445
-        ("ua-whatsapp", 'https://web.whatsapp.com/', no_qtwe_ua),
+    utils.unused(maybe_newer_chrome_ua)
 
+    user_agents = [
         # Needed to avoid a "you're using a browser [...] that doesn't allow us
         # to keep your account secure" error.
         # https://github.com/qutebrowser/qutebrowser/issues/5182
-        ("ua-google", 'https://accounts.google.com/*', firefox_ua),
-
-        # Needed because Slack adds an error which prevents using it relatively
-        # aggressively, despite things actually working fine.
-        # October 2023: Slack claims they only support 112+. On #7951 at least
-        # one user claims it still works fine on 108 based Qt versions.
-        ("ua-slack", 'https://*.slack.com/*', maybe_newer_chrome_ua(112)),
+        ("ua-google", "https://accounts.google.com/*", firefox_ua),
     ]
 
     for name, pattern, ua in user_agents:
@@ -501,7 +553,7 @@ def _init_default_settings():
     - Make sure the devtools always get images/JS permissions.
     - On Qt 6, make sure files in the data path can load external resources.
     """
-    devtools_settings: List[Tuple[str, Any]] = [
+    devtools_settings: list[tuple[str, Any]] = [
         ('content.javascript.enabled', True),
         ('content.images', True),
         ('content.cookies.accept', 'all'),
@@ -514,7 +566,7 @@ def _init_default_settings():
                                     hide_userconfig=True)
 
     if machinery.IS_QT6:
-        userscripts_settings: List[Tuple[str, Any]] = [
+        userscripts_settings: list[tuple[str, Any]] = [
             ("content.local_content_can_access_remote_urls", True),
             ("content.local_content_can_access_file_urls", False),
         ]

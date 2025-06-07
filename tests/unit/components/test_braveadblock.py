@@ -5,7 +5,7 @@
 import pathlib
 import logging
 import csv
-from typing import Iterable, Tuple
+from collections.abc import Iterable
 
 from qutebrowser.qt.core import QUrl
 
@@ -105,7 +105,6 @@ def assert_none_blocked(ad_blocker):
     assert_urls(ad_blocker, NOT_OKAY_URLS + OKAY_URLS, False)
 
     def assert_not_blocked(url, source_url, resource_type):
-        nonlocal ad_blocker
         assert not ad_blocker._is_blocked(url, source_url, resource_type)
 
     run_function_on_dataset(assert_not_blocked)
@@ -165,7 +164,7 @@ def assert_only_one_success_message(messages):
 
 def assert_urls(
     ad_blocker: braveadblock.BraveAdBlocker,
-    urls: Iterable[Tuple[str, str, ResourceType]],
+    urls: Iterable[tuple[str, str, ResourceType]],
     should_be_blocked: bool,
 ) -> None:
     for (str_url, source_str_url, request_type) in urls:
