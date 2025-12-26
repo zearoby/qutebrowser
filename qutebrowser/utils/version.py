@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
 import qutebrowser
 from qutebrowser.utils import (log, utils, standarddir, usertypes, message, resources,
                                qtutils)
-from qutebrowser.misc import objects, earlyinit, sql, httpclient, pastebin, elf
+from qutebrowser.misc import objects, earlyinit, sql, httpclient, pastebin, elf, wmname
 from qutebrowser.browser import pdfjs
 from qutebrowser.config import config
 if TYPE_CHECKING:
@@ -559,6 +559,7 @@ class WebEngineVersions:
         118: '118.0.5993.220',  # 2024-01-25, Qt 6.7
         122: '122.0.6261.171',  # 2024-04-15, Qt 6.8
         130: '130.0.6723.192',  # 2025-01-06, Qt 6.9
+        134: '134.0.6998.208',  # 2025-04-16, Qt 6.10
     }
 
     # Dates based on https://chromereleases.googleblog.com/
@@ -652,6 +653,11 @@ class WebEngineVersions:
         ## Qt 6.9
         utils.VersionNumber(6, 9): (_BASES[130], '133.0.6943.141'),  # 2025-02-25
         utils.VersionNumber(6, 9, 1): (_BASES[130], '136.0.7103.114'),  # 2025-05-13
+        utils.VersionNumber(6, 9, 2): (_BASES[130], '139.0.7258.67'),  # 2025-07-29
+
+        ## Qt 6.10
+        utils.VersionNumber(6, 10): (_BASES[134], '140.0.7339.207'),  # 2025-09-22
+        utils.VersionNumber(6, 10, 1): (_BASES[134], '142.0.7444.162'),  # 2025-11-11
     }
 
     def __post_init__(self) -> None:
@@ -920,6 +926,51 @@ def _backend() -> str:
     raise utils.Unreachable(objects.backend)
 
 
+def _webengine_extensions() -> Sequence[str]:
+    """Get a list of WebExtensions enabled in QtWebEngine."""
+    lines: list[str] = []
+    if (
+        objects.backend == usertypes.Backend.QtWebEngine
+        and machinery.IS_QT6  # mypy; TODO early return once Qt 5 is dropped
+    ):
+        from qutebrowser.browser.webengine import webenginesettings
+        lines.append("WebExtensions:")
+
+        if webenginesettings.default_profile:
+            profile = webenginesettings.default_profile
+        elif "avoid-chromium-init" in objects.debug_flags:
+            lines[0] += " unknown (avoiding init)"
+            return lines
+        else:
+            profile = webenginesettings.default_qt_profile()
+
+        try:
+            ext_manager = profile.extensionManager()
+        except AttributeError:
+            # Added in QtWebEngine 6.10
+            return []
+        assert ext_manager is not None  # mypy
+
+        if not ext_manager.extensions():
+            lines[0] += " none"
+
+        for info in ext_manager.extensions():
+            tags = [
+                ("[x]" if info.isEnabled() else "[ ]") + " enabled",
+                ("[x]" if info.isLoaded() else "[ ]") + " loaded",
+                ("[x]" if info.isInstalled() else "[ ]") + " installed",
+            ]
+            lines.append(f"  {info.name()} ({info.id()})")
+            lines.append(f"  {'  '.join(tags)}")
+            lines.append(f"  {info.path()}")
+            url = info.actionPopupUrl()
+            if url.isValid():
+                lines.append(f"  {url.toDisplayString()}")
+            lines.append("")
+
+    return lines
+
+
 def _uptime() -> datetime.timedelta:
     time_delta = datetime.datetime.now() - objects.qapp.launch_time
     # Round off microseconds
@@ -969,13 +1020,15 @@ def version_info() -> str:
                                      if QSslSocket.supportsSsl() else 'no'),
     ]
 
+    lines += _webengine_extensions()
+
     if objects.qapp:
         style = objects.qapp.style()
         assert style is not None
         metaobj = style.metaObject()
         assert metaobj is not None
         lines.append('Style: {}'.format(metaobj.className()))
-        lines.append('Platform plugin: {}'.format(objects.qapp.platformName()))
+        lines.append('Qt Platform: {}'.format(gui_platform_info()))
         lines.append('OpenGL: {}'.format(opengl_info()))
 
     importpath = os.path.dirname(os.path.abspath(qutebrowser.__file__))
@@ -1142,6 +1195,19 @@ def opengl_info() -> Optional[OpenGLInfo]:  # pragma: no cover
         ctx.doneCurrent()
         if old_context and old_surface:
             old_context.makeCurrent(old_surface)
+
+
+def gui_platform_info() -> str:
+    """Get the Qt GUI platform name, optionally with the WM/compositor name."""
+    info = objects.qapp.platformName()
+    try:
+        if info == "xcb":
+            info += f" ({wmname.x11_wm_name()})"
+        elif info in ["wayland", "wayland-egl"]:
+            info += f" ({wmname.wayland_compositor_name()})"
+    except wmname.Error as e:
+        info += f" (Error: {e})"
+    return info
 
 
 def pastebin_version(pbclient: pastebin.PastebinClient = None) -> None:

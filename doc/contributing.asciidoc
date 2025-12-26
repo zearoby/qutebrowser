@@ -121,8 +121,6 @@ Currently, the following tox environments are available:
 * `pyroma`: Check packaging practices with
   https://pypi.python.org/pypi/pyroma/[pyroma].
 * `eslint`: Run https://eslint.org/[ESLint] javascript checker.
-* `check-manifest`: Check MANIFEST.in completeness with
-  https://github.com/mgedmin/check-manifest[check-manifest].
 * `mkvenv`: Bootstrap a virtualenv for testing.
 * `misc`: Run `scripts/misc_checks.py` to check for:
     - untracked git files
@@ -604,6 +602,7 @@ Info pages:
 - chrome://device-log/ (QtWebEngine >= 6.3)
 - chrome://gpu/
 - chrome://sandbox/ (Linux only)
+- chrome://qt/ (QtWebEngine >= 6.7)
 
 Misc. / Debugging pages:
 
@@ -614,6 +613,7 @@ Misc. / Debugging pages:
 - chrome://ukm/ (QtWebEngine >= 5.15.3)
 - chrome://user-actions/ (QtWebEngine >= 5.15.3)
 - chrome://webrtc-logs/ (QtWebEngine >= 5.15.3)
+- chrome://extensions/ (QtWebEngine >= 6.10)
 
 Internals pages:
 
@@ -804,7 +804,8 @@ qutebrowser release
 **Automatic release via GitHub Actions (starting with v3.0.0):**
 
 * Double check Python version in `.github/workflows/release.yml`
-* Run the `release` workflow on the `main` branch, e.g. via `gh workflow run release -f release_type=major` (`release_type` can be `major`, `minor` or `patch`; you can also override `python_version`)
+* Run the `release` workflow on the `main` branch, e.g. via `gh workflow run release -f release_type=minor` (`release_type` can be `major`, `minor` or `patch`; you can also override `python_version`)
+* Consider running `gh run watch` or `gh run view --web` to watch the progress
 
 **Manual release:**
 
